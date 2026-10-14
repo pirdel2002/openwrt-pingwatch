@@ -1,0 +1,3 @@
+#!/usr/bin/lua
+local fs=require('nixio.fs')
+print(fs.readfile('/tmp/pingwatch-manager/results.json') or '{"phase":1,"mode":"observe_only","running":false,"rows":[],"error":"not_run"}')

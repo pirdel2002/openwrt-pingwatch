@@ -1,0 +1,35 @@
+#!/bin/sh
+. /lib/functions.sh
+STATE_DIR=/tmp/pingwatch
+
+json_escape() {
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+config_load pingwatch
+first=1
+printf '['
+
+emit_target() {
+    local s="$1" enabled name host iface key state fails oks down_since
+    config_get_bool enabled "$s" enabled 1
+    [ "$enabled" -eq 1 ] || return
+    config_get name "$s" name "$s"
+    config_get host "$s" host
+    config_get iface "$s" interface
+
+    key="$(printf '%s' "$s" | tr -cd 'A-Za-z0-9_-')"
+    state="$(cat "$STATE_DIR/${key}.state" 2>/dev/null || echo UNKNOWN)"
+    fails="$(cat "$STATE_DIR/${key}.fails" 2>/dev/null || echo 0)"
+    oks="$(cat "$STATE_DIR/${key}.oks" 2>/dev/null || echo 0)"
+    down_since="$(cat "$STATE_DIR/${key}.down_since" 2>/dev/null || echo 0)"
+
+    [ "$first" -eq 1 ] || printf ','
+    first=0
+    printf '{"section":"%s","name":"%s","host":"%s","interface":"%s","state":"%s","fails":%s,"oks":%s,"down_since":%s}' \
+        "$(json_escape "$s")" "$(json_escape "$name")" "$(json_escape "$host")" \
+        "$(json_escape "$iface")" "$(json_escape "$state")" "$fails" "$oks" "$down_since"
+}
+
+config_foreach emit_target target
+printf ']'

@@ -1,0 +1,86 @@
+#!/usr/bin/lua
+local nx=require('nixio')
+local fs=require('nixio.fs')
+local json=require('luci.jsonc')
+local sys=require('luci.sys')
+local policy=dofile('/usr/share/pingwatch-manager/policy.lua')
+local base='/tmp/pingwatch-manager'
+local work=base..'/work'
+local child
+local function quote(s) return "'"..s:gsub("'", "'\\''").."'" end
+local function stop()
+  if child then nx.kill(child,15); nx.waitpid(child); child=nil end
+end
+local function clean()
+  stop()
+  for _,f in ipairs({'core.json','probe.txt','config/passwall2'}) do fs.unlink(work..'/'..f) end
+  fs.rmdir(work..'/config'); fs.rmdir(work); fs.rmdir(base..'/lock')
+end
+nx.umask(63)
+fs.mkdir(base,448)
+assert(not fs.lstat(base..'/lock'), 'worker_already_running')
+assert(fs.mkdir(base..'/lock',448), 'worker_already_running')
+nx.signal(15,function() clean(); os.exit(1) end)
+nx.signal(2,function() clean(); os.exit(1) end)
+local function publish(s)
+  assert(fs.writefile(base..'/results.new',json.stringify(s)))
+  assert(fs.rename(base..'/results.new',base..'/results.json'))
+end
+local ok=pcall(function()
+  assert(fs.mkdir(work,448)); assert(fs.mkdir(work..'/config',448))
+  local snapshot=assert(fs.readfile('/etc/config/passwall2'))
+  assert(fs.writefile(work..'/config/passwall2',snapshot))
+  local cursor=require('luci.model.uci').cursor(work..'/config')
+  local nodes,subs=policy.inventory(cursor)
+  local report={phase=1,mode='observe_only',started_at=os.time(),running=true,rows={},subscriptions=subs,
+    guard_ok=policy.guard(cursor),direct={state='unverified'},route_changed=false}
+  publish(report)
+  for _,n in ipairs(nodes) do
+    local row={id=n.id,protocol=n.protocol,core=n.core,state='unsupported'}
+    if n.id:match('^[%w_]+$') and (n.core=='Xray' or n.core=='Sing-Box' or n.core=='sing-box') then
+      -- Reserve a currently free loopback port; core readiness is checked below.
+      local sock=assert(nx.socket('inet','stream'))
+      assert(sock:bind('127.0.0.1',0)); local _,port=sock:getsockname(); sock:close()
+      local cmd='timeout 15 lua /usr/share/pingwatch-manager/generate.lua '..quote(work..'/config')..' '..quote(n.id)..' '..port..' > '..quote(work..'/core.json')..' 2>/dev/null'
+      if sys.call(cmd)==0 then
+        local binary=n.core=='Xray' and '/usr/bin/xray' or '/usr/bin/sing-box'
+        local check=n.core=='Xray' and 'run -test -c' or 'check -c'
+        if sys.call('timeout 10 '..binary..' '..check..' '..quote(work..'/core.json')..' >/dev/null 2>&1')==0 then
+          child=assert(nx.fork())
+          if child==0 then
+            local null=assert(nx.open('/dev/null','w')); nx.dup(null,nx.stdout); nx.dup(null,nx.stderr)
+            nx.exec('/usr/bin/timeout','-k','2','25',binary,'run','-c',work..'/core.json'); os.exit(127)
+          end
+          local ready=false
+          for _=1,30 do
+            local s=nx.socket('inet','stream'); ready=s:connect('127.0.0.1',port); s:close()
+            if ready then break end; nx.nanosleep(0,100000000)
+          end
+          if ready then
+            local probes={}
+            for _,url in ipairs({'https://www.google.com/generate_204','https://cp.cloudflare.com/generate_204'}) do
+              local rc=sys.call("env -u ALL_PROXY -u HTTPS_PROXY -u HTTP_PROXY curl --silent --show-error --noproxy '' --proxy socks5h://127.0.0.1:"..port.." --connect-timeout 4 --max-time 7 --output /dev/null --write-out '%{http_code}:%{time_total}' "..quote(url)..' > '..quote(work..'/probe.txt')..' 2>/dev/null')
+              local code,t=(fs.readfile(work..'/probe.txt') or ''):match('^(%d%d%d):([%d.]+)$')
+              probes[#probes+1]={ok=rc==0 and code=='204',ms=tonumber(t) and math.floor(tonumber(t)*1000)}
+            end
+            row.state=probes[1].ok and probes[2].ok and 'healthy' or 'unhealthy'
+            if row.state=='healthy' then row.latency_ms=math.max(probes[1].ms,probes[2].ms) end
+          else row.state='error'; row.reason='core_not_ready' end
+          stop()
+        else row.state='error'; row.reason='core_config_invalid' end
+      else row.reason='adapter_not_supported' end
+    end
+    fs.unlink(work..'/core.json'); fs.unlink(work..'/probe.txt')
+    report.rows[#report.rows+1]=row; publish(report)
+  end
+  local unchanged=fs.readfile('/etc/config/passwall2')==snapshot
+  report.running=false; report.finished_at=os.time(); report.snapshot_current=unchanged
+  report.recommendation=policy.recommend(report.rows,report.guard_ok and unchanged,false)
+  report.complete=unchanged
+  publish(report)
+end)
+clean()
+if not ok then
+  publish({phase=1,mode='observe_only',running=false,complete=false,error='worker_failed',route_changed=false,rows={}})
+  os.exit(1)
+end

@@ -1,0 +1,50 @@
+#!/bin/sh
+. /lib/functions.sh
+STATE_DIR="/tmp/pingwatch"
+RED="/sys/class/leds/LED0_Red"
+GREEN="/sys/class/leds/LED0_Green"
+BLUE="/sys/class/leds/LED0_Blue"
+
+[ -d "$RED" ] && [ -d "$GREEN" ] && [ -d "$BLUE" ] || exit 0
+
+safe_key() { printf '%s' "$1" | tr -cd 'A-Za-z0-9_-'; }
+
+config_load pingwatch
+config_get_bool master main led_enabled 0
+[ "$master" = "1" ] || exit 0
+
+chosen=""
+choose_target() {
+	local s="$1" enabled affect color state key
+	[ -n "$chosen" ] && return
+	config_get_bool enabled "$s" enabled 1
+	config_get_bool affect "$s" led_enabled 1
+	[ "$enabled" = "1" ] && [ "$affect" = "1" ] || return
+	key="$(safe_key "$s")"
+	state="$(cat "$STATE_DIR/${key}.ledstate" 2>/dev/null)"
+	[ "$state" = "DOWN" ] || return
+	config_get color "$s" led_color "#ff0000"
+	chosen="$color"
+}
+config_foreach choose_target target
+
+if [ -z "$chosen" ]; then
+	config_get chosen main ok_led_color "#00ff00"
+fi
+
+case "$chosen" in
+	\#[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]) ;;
+	*) chosen="#00ff00" ;;
+esac
+
+hex="${chosen#\#}"
+rr="${hex%????}"
+rest="${hex#??}"
+gg="${rest%??}"
+bb="${hex#????}"
+r=$((0x$rr)); g=$((0x$gg)); b=$((0x$bb))
+
+for p in "$RED" "$GREEN" "$BLUE"; do echo none > "$p/trigger" 2>/dev/null; done
+echo "$r" > "$RED/brightness" 2>/dev/null
+echo "$g" > "$GREEN/brightness" 2>/dev/null
+echo "$b" > "$BLUE/brightness" 2>/dev/null

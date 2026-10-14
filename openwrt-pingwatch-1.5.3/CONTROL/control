@@ -1,0 +1,8 @@
+Package: luci-app-pingwatch
+Version: 1.5.3-1
+Depends: libc, luci-base, rpcd, uclient-fetch, ca-bundle
+Architecture: all
+Maintainer: OpenAI
+Section: luci
+Priority: optional
+Description: Modern LuCI PingWatch monitor with IPPanel SMS alerts

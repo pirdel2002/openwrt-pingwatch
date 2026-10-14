@@ -1,0 +1,143 @@
+#!/bin/sh
+. /lib/functions.sh
+
+TAG="pingwatch"
+FORCE_TEST=0
+EXTRA_RECIPIENTS=""
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--test)
+			FORCE_TEST=1
+			shift
+			;;
+		--extra-recipient)
+			[ $# -ge 2 ] || exit 2
+			EXTRA_RECIPIENTS="$EXTRA_RECIPIENTS $2"
+			shift 2
+			;;
+		--)
+			shift
+			break
+			;;
+		*)
+			break
+			;;
+	esac
+done
+
+MESSAGE="$1"
+[ -n "$MESSAGE" ] || {
+	echo "Message is required"
+	exit 2
+}
+
+log() {
+	logger -t "$TAG" "$*"
+}
+
+config_load pingwatch
+config_get_bool sms_enabled sms enabled 0
+config_get api_key sms api_key
+config_get from_number sms from_number
+config_get timeout sms timeout 12
+
+if [ "$sms_enabled" != "1" ] && [ "$FORCE_TEST" != "1" ]; then
+	log "SMS disabled: $MESSAGE"
+	echo "SMS is disabled"
+	exit 1
+fi
+
+RECIPIENTS=""
+
+add_recipient() {
+	local r="$1"
+	[ -n "$r" ] || return
+	case "$r" in
+		+[1-9][0-9]*) ;;
+		*)
+			log "Invalid recipient skipped: $r"
+			return
+			;;
+	esac
+	case " $RECIPIENTS " in
+		*" $r "*) ;;
+		*) RECIPIENTS="$RECIPIENTS $r" ;;
+	esac
+}
+
+collect_list_item() {
+	add_recipient "$1"
+}
+
+# New scalar/list option
+config_list_foreach sms recipient collect_list_item
+
+# Legacy list/scalar options
+config_list_foreach sms recipients collect_list_item
+config_get legacy_recipient sms recipient
+[ -n "$legacy_recipient" ] && add_recipient "$legacy_recipient"
+config_get legacy_recipients sms recipients
+for r in $legacy_recipients; do add_recipient "$r"; done
+
+for r in $EXTRA_RECIPIENTS; do add_recipient "$r"; done
+
+count=0
+for r in $RECIPIENTS; do count=$((count + 1)); done
+[ "$count" -gt 0 ] || {
+	echo "No valid recipient configured"
+	exit 2
+}
+
+[ -n "$api_key" ] || {
+	echo "IPPanel API key is missing"
+	exit 2
+}
+[ -n "$from_number" ] || {
+	echo "IPPanel sender number is missing"
+	exit 2
+}
+
+json_escape() {
+	printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+rec_json=""
+for r in $RECIPIENTS; do
+	[ -n "$rec_json" ] && rec_json="$rec_json,"
+	rec_json="$rec_json\"$(json_escape "$r")\""
+done
+
+payload="{\"sending_type\":\"webservice\",\"from_number\":\"$(json_escape "$from_number")\",\"message\":\"$(json_escape "$MESSAGE")\",\"params\":{\"recipients\":[$rec_json]}}"
+url="https://edge.ippanel.com/v1/api/send"
+
+tmp="/tmp/pingwatch-sms.$$"
+trap 'rm -f "$tmp"' EXIT
+
+if command -v curl >/dev/null 2>&1; then
+	http_code="$(curl -sS -m "$timeout" -o "$tmp" -w '%{http_code}' \
+		-H "Authorization: $api_key" \
+		-H "Content-Type: application/json" \
+		--data "$payload" "$url" 2>/dev/null)"
+	rc=$?
+else
+	uclient-fetch -q -T "$timeout" \
+		--header="Authorization: $api_key" \
+		--header="Content-Type: application/json" \
+		--post-data="$payload" \
+		-O "$tmp" "$url" >/dev/null 2>&1
+	rc=$?
+	http_code=""
+fi
+
+body="$(cat "$tmp" 2>/dev/null)"
+
+if [ "$rc" -eq 0 ] && { echo "$body" | grep -Eq '"status"[[:space:]]*:[[:space:]]*true' || { [ -n "$http_code" ] && [ "$http_code" -ge 200 ] 2>/dev/null && [ "$http_code" -lt 300 ] 2>/dev/null && ! echo "$body" | grep -Eqi '"error"|failed|invalid'; }; }; then
+	log "IPPanel SMS sent successfully to $count recipient(s)"
+	echo "SUCCESS: IPPanel accepted SMS for $count recipient(s)"
+	exit 0
+fi
+
+log "IPPanel SMS failed: HTTP=$http_code BODY=$body"
+echo "FAILED: ${body:-request error}"
+exit 1

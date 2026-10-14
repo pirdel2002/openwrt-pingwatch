@@ -1,0 +1,75 @@
+#!/bin/sh
+[ -n "$IPKG_INSTROOT" ] && exit 0
+
+# Remove legacy Lua/CBI implementation from earlier package versions
+rm -f /usr/lib/lua/luci/controller/pingwatch.lua
+rm -f /usr/lib/lua/luci/model/cbi/pingwatch.lua
+rm -f /usr/lib/lua/luci/view/pingwatch/status.htm
+rmdir /usr/lib/lua/luci/view/pingwatch 2>/dev/null || true
+
+chmod 755 /etc/init.d/pingwatch \
+	/usr/sbin/pingwatch \
+	/usr/sbin/pingwatch-send-sms \
+	/usr/sbin/pingwatch-status-json 2>/dev/null || true
+
+/etc/init.d/pingwatch enable 2>/dev/null || true
+/etc/init.d/pingwatch restart 2>/dev/null || true
+
+# Remove obsolete scalar key if the modern recipient list exists
+if uci -q get pingwatch.sms.recipient >/dev/null 2>&1; then
+    uci -q delete pingwatch.sms.recipients 2>/dev/null || true
+    uci commit pingwatch 2>/dev/null || true
+fi
+
+rm -f /etc/config/pingwatch-opkg 2>/dev/null || true
+rm -f /tmp/luci-indexcache
+rm -rf /tmp/luci-modulecache
+/etc/init.d/rpcd restart 2>/dev/null || true
+/etc/init.d/uhttpd restart 2>/dev/null || true
+exit 0
+
+# Add non-destructive defaults for LED settings.
+if [ -f /etc/config/pingwatch ]; then
+	. /lib/functions.sh
+	config_load pingwatch
+	config_get _pw_ok main ok_led_color
+	[ -n "$_pw_ok" ] || uci set pingwatch.main.ok_led_color='#00ff00'
+	_pw_led_defaults() {
+		local s="$1" v
+		config_get v "$s" led_enabled
+		[ -n "$v" ] || uci set "pingwatch.$s.led_enabled=1"
+		config_get v "$s" led_color
+		[ -n "$v" ] || uci set "pingwatch.$s.led_color=#ff0000"
+	}
+	config_foreach _pw_led_defaults target
+	uci commit pingwatch
+fi
+/usr/sbin/pingwatch-update-led 2>/dev/null || true
+
+if [ -f /etc/config/pingwatch ]; then
+	_pw_led_master="$(uci -q get pingwatch.main.led_enabled)"
+	[ -n "$_pw_led_master" ] || uci set pingwatch.main.led_enabled='0'
+	uci commit pingwatch
+fi
+
+# Ensure Internet detection section exists without overwriting user configuration.
+if [ -f /etc/config/pingwatch ]; then
+	if ! uci -q get pingwatch.internet >/dev/null 2>&1; then
+		uci set pingwatch.internet='internet'
+		uci set pingwatch.internet.enabled='0'
+		uci commit pingwatch
+	fi
+fi
+
+# Add per-target notification defaults without overwriting existing settings.
+if [ -f /etc/config/pingwatch ]; then
+	. /lib/functions.sh
+	config_load pingwatch
+	_pw_notify_defaults() {
+		local s="$1" v
+		config_get v "$s" notify_mode
+		[ -n "$v" ] || uci set "pingwatch.$s.notify_mode=both"
+	}
+	config_foreach _pw_notify_defaults target
+	uci commit pingwatch
+fi

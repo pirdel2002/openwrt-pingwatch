@@ -1,0 +1,55 @@
+#!/bin/sh
+. /lib/functions.sh
+
+STATE_DIR="/tmp/pingwatch"
+
+json_escape() {
+	printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+safe_key() {
+	printf '%s' "$1" | tr -cd 'A-Za-z0-9_-'
+}
+
+config_load pingwatch
+config_get_bool master main led_enabled 0
+config_get ok_color main ok_led_color "#00ff00"
+
+if [ "$master" != "1" ]; then
+	printf '{"enabled":false,"color":"%s","source":"Disabled","state":"DISABLED"}\n' "$(json_escape "$ok_color")"
+	exit 0
+fi
+
+chosen=""
+source_name=""
+source_state="UP"
+
+choose_target() {
+	local s="$1" enabled affect color state key name
+	[ -n "$chosen" ] && return
+
+	config_get_bool enabled "$s" enabled 1
+	config_get_bool affect "$s" led_enabled 1
+	[ "$enabled" = "1" ] && [ "$affect" = "1" ] || return
+
+	key="$(safe_key "$s")"
+	state="$(cat "$STATE_DIR/${key}.ledstate" 2>/dev/null)"
+	[ "$state" = "DOWN" ] || return
+
+	config_get color "$s" led_color "#ff0000"
+	config_get name "$s" name "$s"
+	chosen="$color"
+	source_name="$name"
+	source_state="DOWN"
+}
+
+config_foreach choose_target target
+
+if [ -z "$chosen" ]; then
+	chosen="$ok_color"
+	source_name="All OK"
+	source_state="UP"
+fi
+
+printf '{"enabled":true,"color":"%s","source":"%s","state":"%s"}\n' \
+	"$(json_escape "$chosen")" "$(json_escape "$source_name")" "$(json_escape "$source_state")"

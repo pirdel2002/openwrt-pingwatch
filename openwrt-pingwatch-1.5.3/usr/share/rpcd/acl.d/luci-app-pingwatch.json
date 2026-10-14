@@ -1,0 +1,50 @@
+{
+  "luci-app-pingwatch": {
+    "description": "Grant access to PingWatch",
+    "read": {
+      "uci": [
+        "pingwatch"
+      ],
+      "file": {
+        "/usr/sbin/pingwatch-status-json": [
+          "exec"
+        ],
+        "/usr/sbin/pingwatch-led-status-json": [
+          "exec"
+        ]
+      },
+      "ubus": {
+        "file": [
+          "exec"
+        ],
+        "service": [
+          "list"
+        ]
+      }
+    },
+    "write": {
+      "uci": [
+        "pingwatch"
+      ],
+      "file": {
+        "/usr/sbin/pingwatch-send-sms *": [
+          "exec"
+        ],
+        "/etc/init.d/pingwatch restart": [
+          "exec"
+        ],
+        "/usr/sbin/pingwatch-send-sms --test *": [
+          "exec"
+        ],
+        "/usr/sbin/pingwatch-update-led": [
+          "exec"
+        ]
+      },
+      "ubus": {
+        "file": [
+          "exec"
+        ]
+      }
+    }
+  }
+}

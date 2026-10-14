@@ -1,0 +1,324 @@
+#!/bin/sh
+. /lib/functions.sh
+
+TAG="pingwatch"
+STATE_DIR="/tmp/pingwatch"
+mkdir -p "$STATE_DIR"
+
+log() { logger -t "$TAG" "$*"; }
+
+safe_key() { printf '%s' "$1" | tr -cd 'A-Za-z0-9_-'; }
+
+now() { date +%s; }
+
+probe_icmp() {
+	local host="$1" iface="$2" timeout="$3" count="$4" ipmode="$5"
+	local cmd="ping"
+	[ "$ipmode" = "ipv6" ] && cmd="ping6"
+	if [ -n "$iface" ]; then
+		"$cmd" -I "$iface" -c "$count" -W "$timeout" "$host" >/dev/null 2>&1
+	else
+		"$cmd" -c "$count" -W "$timeout" "$host" >/dev/null 2>&1
+	fi
+}
+
+probe_tcp() {
+	local host="$1" port="$2" timeout="$3"
+	command -v nc >/dev/null 2>&1 || return 127
+	nc -z -w "$timeout" "$host" "$port" >/dev/null 2>&1
+}
+
+probe_http() {
+	local url="$1" timeout="$2"
+	if command -v curl >/dev/null 2>&1; then
+		code="$(curl -L -k -sS -o /dev/null -m "$timeout" -w '%{http_code}' "$url" 2>/dev/null)" || return 1
+		case "$code" in
+			2??|3??) return 0 ;;
+			*) return 1 ;;
+		esac
+	fi
+	command -v uclient-fetch >/dev/null 2>&1 || return 127
+	uclient-fetch -q -T "$timeout" -O /dev/null "$url" >/dev/null 2>&1
+}
+
+probe_dns() {
+	local host="$1"
+	if command -v nslookup >/dev/null 2>&1; then
+		nslookup "$host" >/dev/null 2>&1
+	else
+		return 127
+	fi
+}
+
+probe_target() {
+	local type="$1" host="$2" iface="$3" timeout="$4" count="$5" port="$6" url="$7" ipmode="$8"
+	case "$type" in
+		tcp) probe_tcp "$host" "$port" "$timeout" ;;
+		http|https) probe_http "${url:-$host}" "$timeout" ;;
+		dns) probe_dns "$host" ;;
+		icmp|ping|*) probe_icmp "$host" "$iface" "$timeout" "$count" "$ipmode" ;;
+	esac
+}
+
+QUEUE_DIR="$STATE_DIR/smsqueue"
+mkdir -p "$QUEUE_DIR"
+QUEUE_MAX=50
+
+queue_file() {
+	local key="$1"
+	printf '%s/%s.pending' "$QUEUE_DIR" "$key"
+}
+
+queue_transition() {
+	local key="$1" scope="$2" name="$3" state="$4" ts="$5" section="$6"
+	local f
+	f="$(queue_file "$key")"
+	# Keep only the earliest DOWN and latest state for this logical alert.
+	if [ -f "$f" ]; then
+		. "$f" 2>/dev/null
+		[ -n "$DOWN_TS" ] || DOWN_TS="$ts"
+	else
+		DOWN_TS="$ts"
+	fi
+	[ "$state" = "DOWN" ] && DOWN_TS="$ts"
+	cat > "$f" <<EOF
+SCOPE='$scope'
+NAME='$(printf "%s" "$name" | sed "s/'/'\\\\''/g")'
+STATE='$state'
+DOWN_TS='$DOWN_TS'
+LAST_TS='$ts'
+SECTION='$section'
+EOF
+	# Hard cap: remove oldest queue files beyond QUEUE_MAX.
+	set -- $(ls -1t "$QUEUE_DIR"/*.pending 2>/dev/null)
+	n=0
+	for q in "$@"; do
+		n=$((n + 1))
+		[ "$n" -le "$QUEUE_MAX" ] || rm -f "$q"
+	done
+}
+
+send_with_target_recipients() {
+	local section="$1" msg="$2"
+	local args=""
+	add_extra() {
+		local r="$1"
+		[ -n "$r" ] || return
+		args="$args --extra-recipient $r"
+	}
+	[ -n "$section" ] && config_list_foreach "$section" extra_recipient add_extra
+	# shellcheck disable=SC2086
+	/usr/sbin/pingwatch-send-sms $args -- "$msg" >/dev/null 2>&1
+}
+
+send_or_queue() {
+	local key="$1" scope="$2" section="$3" name="$4" state="$5" msg="$6" ts
+	ts="$(now)"
+	if send_with_target_recipients "$section" "$msg"; then
+		rm -f "$(queue_file "$key")"
+		return 0
+	fi
+	queue_transition "$key" "$scope" "$name" "$state" "$ts" "$section"
+	log "SMS queued in RAM: $scope $name $state"
+	return 1
+}
+
+format_hhmm() {
+	local ts="$1"
+	date -d "@$ts" '+%H:%M' 2>/dev/null || date '+%H:%M'
+}
+
+flush_sms_queue() {
+	local f SCOPE NAME STATE DOWN_TS LAST_TS SECTION from_time to_time msg
+	for f in "$QUEUE_DIR"/*.pending; do
+		[ -f "$f" ] || return 0
+		unset SCOPE NAME STATE DOWN_TS LAST_TS SECTION
+		. "$f" 2>/dev/null || { rm -f "$f"; continue; }
+
+		if [ "$STATE" = "UP" ] && [ -n "$DOWN_TS" ]; then
+			from_time="$(format_hhmm "$DOWN_TS")"
+			to_time="$(format_hhmm "$LAST_TS")"
+			if [ "$SCOPE" = "internet" ]; then
+				msg="اینترنت از ساعت ${from_time} تا ${to_time} قطع بود"
+			else
+				msg="ارتباط با ${NAME} از ساعت ${from_time} تا ${to_time} قطع بود"
+			fi
+		elif [ "$STATE" = "DOWN" ]; then
+			# Still down: retry original outage notice.
+			if [ "$SCOPE" = "internet" ]; then
+				msg="ارتباط اینترنت قطع شد"
+			else
+				msg="ارتباط با ${NAME} قطع شد"
+			fi
+		else
+			# A queued recovery without known outage is not useful.
+			rm -f "$f"
+			continue
+		fi
+
+		if send_with_target_recipients "$SECTION" "$msg"; then
+			log "Queued SMS delivered: $SCOPE $NAME $STATE"
+			rm -f "$f"
+		else
+			# IPPanel/network is still unavailable; stop to avoid hammering API.
+			return 1
+		fi
+	done
+	return 0
+}
+
+
+cooldown_allows() {
+	local key="$1" cooldown="$2" t last
+	[ "$cooldown" -gt 0 ] 2>/dev/null || return 0
+	t="$(now)"
+	last="$(cat "$STATE_DIR/${key}.last_sms" 2>/dev/null)"
+	[ -z "$last" ] && return 0
+	[ $((t - last)) -ge "$cooldown" ]
+}
+
+mark_sms_time() {
+	local key="$1"
+	now > "$STATE_DIR/${key}.last_sms"
+}
+
+# Per-target probe/update
+check_target() {
+	local s="$1" enabled name host iface interval timeout count fail_threshold recover_threshold
+	local test_type tcp_port http_url ipmode notify_mode cooldown
+	local key next state fails oks down_since result
+
+	config_get_bool enabled "$s" enabled 1
+	[ "$enabled" = "1" ] || return
+
+	config_get name "$s" name "$s"
+	config_get host "$s" host
+	[ -n "$host" ] || return
+
+	config_get iface "$s" interface ""
+	config_get interval "$s" interval 15
+	config_get timeout "$s" timeout 2
+	config_get count "$s" count 1
+	config_get fail_threshold "$s" fail_threshold 3
+	config_get recover_threshold "$s" recover_threshold 2
+	config_get test_type "$s" test_type icmp
+	config_get tcp_port "$s" tcp_port 443
+	config_get http_url "$s" http_url ""
+	config_get ipmode "$s" ipmode auto
+	config_get notify_mode "$s" notify_mode both
+	config_get cooldown "$s" sms_cooldown 0
+
+	key="$(safe_key "$s")"
+	next="$(cat "$STATE_DIR/${key}.next" 2>/dev/null)"
+	[ -n "$next" ] || next=0
+	[ "$(now)" -ge "$next" ] || return
+	echo $(( $(now) + interval )) > "$STATE_DIR/${key}.next"
+
+	state="$(cat "$STATE_DIR/${key}.state" 2>/dev/null)"
+	[ -n "$state" ] || state="UNKNOWN"
+	fails="$(cat "$STATE_DIR/${key}.fails" 2>/dev/null)"
+	oks="$(cat "$STATE_DIR/${key}.oks" 2>/dev/null)"
+	[ -n "$fails" ] || fails=0
+	[ -n "$oks" ] || oks=0
+
+	if probe_target "$test_type" "$host" "$iface" "$timeout" "$count" "$tcp_port" "$http_url" "$ipmode"; then
+		echo "UP" > "$STATE_DIR/${key}.ledstate"
+		fails=0
+		oks=$((oks + 1))
+		echo "$fails" > "$STATE_DIR/${key}.fails"
+		echo "$oks" > "$STATE_DIR/${key}.oks"
+
+		if [ "$state" = "DOWN" ] && [ "$oks" -ge "$recover_threshold" ]; then
+			echo "UP" > "$STATE_DIR/${key}.state"
+			rm -f "$STATE_DIR/${key}.down_since"
+			log "RECOVERED $name ($host)"
+			case "$notify_mode" in
+				both|recovery)
+					if cooldown_allows "$key" "$cooldown"; then
+						send_or_queue "$key" "target" "$s" "$name" "UP" "ارتباط با ${name} برقرار شد" || true
+						mark_sms_time "$key"
+					else
+						log "SMS cooldown active for $name recovery"
+					fi
+				;;
+			esac
+		elif [ "$state" = "UNKNOWN" ] && [ "$oks" -ge 1 ]; then
+			echo "UP" > "$STATE_DIR/${key}.state"
+			log "INITIAL UP $name ($host)"
+		fi
+	else
+		echo "DOWN" > "$STATE_DIR/${key}.ledstate"
+		oks=0
+		fails=$((fails + 1))
+		echo "$fails" > "$STATE_DIR/${key}.fails"
+		echo "$oks" > "$STATE_DIR/${key}.oks"
+
+		if [ "$fails" -ge "$fail_threshold" ] && [ "$state" != "DOWN" ]; then
+			echo "DOWN" > "$STATE_DIR/${key}.state"
+			now > "$STATE_DIR/${key}.down_since"
+			log "DOWN $name ($host)"
+			case "$notify_mode" in
+				both|down)
+					if cooldown_allows "$key" "$cooldown"; then
+						send_or_queue "$key" "target" "$s" "$name" "DOWN" "ارتباط با ${name} قطع شد" || true
+						mark_sms_time "$key"
+					else
+						log "SMS cooldown active for $name outage"
+					fi
+				;;
+			esac
+		fi
+	fi
+}
+
+# Internet aggregation. If enabled references are all DOWN => internet down.
+evaluate_internet() {
+	local master prev current refs downrefs section state name
+	config_get_bool master internet enabled 0
+	[ "$master" = "1" ] || return
+
+	refs=0
+	downrefs=0
+
+	check_ref() {
+		local s="$1" en ref key st
+		config_get_bool en "$s" enabled 1
+		config_get_bool ref "$s" internet_reference 0
+		[ "$en" = "1" ] && [ "$ref" = "1" ] || return
+		refs=$((refs + 1))
+		key="$(safe_key "$s")"
+		st="$(cat "$STATE_DIR/${key}.state" 2>/dev/null)"
+		[ "$st" = "DOWN" ] && downrefs=$((downrefs + 1))
+	}
+
+	config_foreach check_ref target
+	[ "$refs" -gt 0 ] || return
+
+	if [ "$downrefs" -eq "$refs" ]; then current="DOWN"; else current="UP"; fi
+	prev="$(cat "$STATE_DIR/internet.state" 2>/dev/null)"
+	[ -n "$prev" ] || prev="UNKNOWN"
+
+	if [ "$prev" != "$current" ]; then
+		echo "$current" > "$STATE_DIR/internet.state"
+		case "$prev:$current" in
+			UP:DOWN)
+				log "INTERNET DOWN"
+				send_or_queue "internet" "internet" "" "Internet" "DOWN" "ارتباط اینترنت قطع شد" || true
+			;;
+			DOWN:UP)
+				log "INTERNET RECOVERED"
+				send_or_queue "internet" "internet" "" "Internet" "UP" "ارتباط اینترنت برقرار شد" || true
+			;;
+		esac
+	fi
+}
+
+while true; do
+	config_load pingwatch
+	config_foreach check_target target
+	evaluate_internet
+	flush_sms_queue >/dev/null 2>&1 || true
+	/usr/sbin/pingwatch-update-led >/dev/null 2>&1
+	config_get loop_sleep main loop_sleep 3
+	sleep "$loop_sleep"
+done
