@@ -1,6 +1,6 @@
 # PingWatch Passwall Manager — phase 1
 
-Version 0.1.0-5. A separate package beside PingWatch 1.5.3; does not replace its SMS/LED service.
+Version 0.1.0-6. A separate package beside PingWatch 1.5.3; does not replace its SMS/LED service.
 
 ## Safety and scope
 
@@ -19,7 +19,7 @@ Version 0.1.0-5. A separate package beside PingWatch 1.5.3; does not replace its
 Keep a local backup of `/etc/config/passwall2` and existing PingWatch config. Do not share either file. Copy only the IPK to the router, then:
 
 ```sh
-opkg install /root/luci-app-pingwatch-manager_0.1.0-5_all.ipk
+opkg install /root/luci-app-pingwatch-manager_0.1.0-6_all.ipk
 /etc/init.d/rpcd restart
 ```
 
@@ -56,3 +56,10 @@ Local tests: `python manager/tests/test_manager.py` (test-only `lupa` Lua 5.1 ru
 ## Follow-up acceptance on router
 
 Before automatic management: verify exact installed generator signatures, mark bypass, core PID cleanup, unchanged config/firewall/active default, two-endpoint results, cancellation, and inventory after adding/removing a subscription. Verify direct connectivity independently before implementing fallback. Any live step requires explicit router authorization.
+
+## Config validation diagnosis
+
+Run `/usr/sbin/pingwatch-manager-worker --check-configs`, then `/usr/sbin/pingwatch-manager-results --configs`.
+This generates and validates configs without starting test cores or running HTTPS probes. Results are stored separately in `/tmp/pingwatch-manager/config-checks.json`; prior health results remain available. `config_valid` means only that the core accepted the config, not that the Node is reachable.
+
+Validation output is captured privately, classified into fixed labels, and removed. No raw error body is returned. Diagnostics include an exit code and allowlisted protocol/transport/security labels. `unclassified_core_error` means the error is not yet recognized; do not publish raw logs or configs. Categories are diagnostic hints, not proof of a specific bad credential or server defect.

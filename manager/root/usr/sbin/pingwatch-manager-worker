@@ -4,7 +4,11 @@ local fs=require('nixio.fs')
 local json=require('luci.jsonc')
 local sys=require('luci.sys')
 local policy=dofile('/usr/share/pingwatch-manager/policy.lua')
+local diagnostics=dofile('/usr/share/pingwatch-manager/diagnostics.lua')
+local check_only=arg[1]=='--check-configs'
+assert(not arg[1] or check_only,'unknown_argument')
 local base='/tmp/pingwatch-manager'
+local result_name=check_only and 'config-checks' or 'results'
 local work=base..'/work'
 local child
 local function quote(s) return "'"..s:gsub("'", "'\\''").."'" end
@@ -13,7 +17,7 @@ local function stop()
 end
 local function clean()
   stop()
-  for _,f in ipairs({'core.json','probe.txt','adapter.err','config/passwall2','cache/cache_pingwatch_test.txt'}) do fs.unlink(work..'/'..f) end
+  for _,f in ipairs({'core.json','core.err','probe.txt','adapter.err','config/passwall2','cache/cache_pingwatch_test.txt'}) do fs.unlink(work..'/'..f) end
   fs.rmdir(work..'/cache'); fs.rmdir(work..'/config'); fs.rmdir(work); fs.rmdir(base..'/lock')
 end
 nx.umask('0077')
@@ -21,8 +25,8 @@ fs.mkdir(base,'0700')
 assert(not fs.lstat(base..'/lock'), 'worker_already_running')
 assert(fs.mkdir(base..'/lock','0700'), 'worker_already_running')
 local function publish(s)
-  assert(fs.writefile(base..'/results.new',json.stringify(s)))
-  assert(fs.rename(base..'/results.new',base..'/results.json'))
+  assert(fs.writefile(base..'/'..result_name..'.new',json.stringify(s)))
+  assert(fs.rename(base..'/'..result_name..'.new',base..'/'..result_name..'.json'))
 end
 local ok=pcall(function()
   assert(fs.mkdir(work,'0700')); assert(fs.mkdir(work..'/config','0700'))
@@ -31,7 +35,7 @@ local ok=pcall(function()
   assert(fs.writefile(work..'/config/passwall2',snapshot))
   local cursor=require('luci.model.uci').cursor(work..'/config')
   local nodes,subs=policy.inventory(cursor)
-  local report={phase=1,mode='observe_only',started_at=os.time(),running=true,rows={},subscriptions=subs,
+  local report={phase=1,mode=check_only and 'config_check_only' or 'observe_only',started_at=os.time(),running=true,rows={},subscriptions=subs,
     guard_ok=policy.guard(cursor),direct={state='unverified'},route_changed=false}
   publish(report)
   for _,n in ipairs(nodes) do
@@ -45,7 +49,10 @@ local ok=pcall(function()
       if adapter_rc==0 then
         local binary=n.core=='Xray' and '/usr/bin/xray' or '/usr/bin/sing-box'
         local check=n.core=='Xray' and 'run -test -c' or 'check -c'
-        if sys.call('timeout 10 '..binary..' '..check..' '..quote(work..'/core.json')..' >/dev/null 2>&1')==0 then
+        local check_rc=sys.call('timeout 10 '..binary..' '..check..' '..quote(work..'/core.json')..' > '..quote(work..'/core.err')..' 2>&1')
+        if check_rc==0 and check_only then
+          row.state='config_valid'
+        elseif check_rc==0 then
           child=assert(nx.fork())
           if child==0 then
             local null=assert(nx.open('/dev/null','w')); nx.dup(null,nx.stdout); nx.dup(null,nx.stderr)
@@ -67,7 +74,11 @@ local ok=pcall(function()
             if row.state=='healthy' then row.latency_ms=math.max(probes[1].ms,probes[2].ms) end
           else row.state='error'; row.reason='core_not_ready' end
           stop()
-        else row.state='error'; row.reason='core_config_invalid' end
+        else
+          row.state='error'; row.reason='core_config_invalid'
+          row.diagnostic={code=diagnostics.classify(fs.readfile(work..'/core.err'),check_rc),exit_code=check_rc,
+            shape=diagnostics.shape(json.parse(fs.readfile(work..'/core.json') or '') or {},n.core)}
+        end
       else
         local stage,source,line=(fs.readfile(work..'/adapter.err') or ''):match('PWDIAG:([%w_]+):([%w_.%-]+):(%d+)')
         row.reason='adapter_failed'; row.adapter_exit=adapter_rc
@@ -76,6 +87,7 @@ local ok=pcall(function()
       end
     end
     fs.unlink(work..'/core.json'); fs.unlink(work..'/probe.txt'); fs.unlink(work..'/adapter.err')
+    fs.unlink(work..'/core.err')
     fs.unlink(work..'/cache/cache_pingwatch_test.txt')
     report.rows[#report.rows+1]=row; publish(report)
   end

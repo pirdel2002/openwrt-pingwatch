@@ -4,7 +4,7 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parent
 OUT=ROOT.parent/'dist'
 OUT.mkdir(exist_ok=True)
-VERSION='0.1.0-5'
+VERSION='0.1.0-6'
 control=f'''Package: luci-app-pingwatch-manager
 Version: {VERSION}
 Architecture: all

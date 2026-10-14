@@ -8,3 +8,5 @@
 - IPK generated reproducibly from this source; outer archive, control/data members and executable modes inspected. Not installed using router opkg or an OpenWrt SDK.
 
 Not validated: actual Passwall2 26.10.1-r2 generator/core execution, installed bypass rules for mark 255, socket-port race under router load, forced-kill cleanup, exact UCI rule IDs, real node/subscription counts, native LuCI page appearance and direct reachability. These are manual router acceptance checks; automatic switching is absent.
+
+Release 0.1.0-6: local tests additionally cover fixed diagnostic labels, redacted config shape and config-only operation preserving prior health results without probes/core launches. User-supplied router output for 0.1.0-5 reports 34 Nodes: 10 healthy, 16 unsuccessful probes, 8 core validation errors; three subscriptions, unchanged config snapshot and shunt guard passing. Independent firewall/bypass verification remains outstanding.

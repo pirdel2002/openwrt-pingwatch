@@ -17,10 +17,11 @@ return view.extend({
           ' | سلامت قوانین شانت: '+(s.guard_ok?'تأیید':'تأیید نشده')+
           ' | اتصال مستقیم: تأیید نشده | اشتراک‌ها: '+subscriptions.length.toLocaleString('fa-IR')+
           (s.recommendation?' | پیشنهاد: '+(s.recommendation.node || s.recommendation.reason):'');
-        var rows=[E('tr',{},['شناسه','هسته','پروتکل','نتیجه','زمان (میلی‌ثانیه)'].map(function(t){return E('th',{},t);} ))];
+        var rows=[E('tr',{},['شناسه','هسته','پروتکل','نتیجه','زمان (میلی‌ثانیه)','تشخیص خطا'].map(function(t){return E('th',{},t);} ))];
         var labels={healthy:'سالم',unhealthy:'ناموفق',unsupported:'پشتیبانی نشده',error:'خطای آزمون'};
         nodes.forEach(function(n){rows.push(E('tr',{},[n.id,n.core,n.protocol,labels[n.state]||n.state,
-          n.latency_ms==null?'—':n.latency_ms.toLocaleString('fa-IR')].map(function(t){return E('td',{},String(t||'—'));})));});
+          n.latency_ms==null?'—':n.latency_ms.toLocaleString('fa-IR'),
+          n.diagnostic?(n.diagnostic.code||n.diagnostic.stage||n.reason):n.reason].map(function(t){return E('td',{},String(t||'—'));})));});
         table.replaceChildren.apply(table,rows);
       }).catch(function(){summary.textContent='خواندن نتیجه ناموفق بود.';});
     }

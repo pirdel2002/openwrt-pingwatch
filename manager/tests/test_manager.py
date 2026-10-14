@@ -53,7 +53,7 @@ class ManagerTests(unittest.TestCase):
           assert(policy.recommend(rows,true,false).node=='b')
         ''')
 
-    def test_worker_mock_end_to_end(self):
+    def test_worker_mock_end_to_end(self,check_only=False,invalid=False):
         code=(ROOT/'root/usr/sbin/pingwatch-manager-worker').read_text().split('\n',1)[1]
         self.lua.execute('''
           files={['/etc/config/passwall2']='SECRET_CONFIG'}; directories={}; published={}; calls={}; killed={}
@@ -73,26 +73,66 @@ class ManagerTests(unittest.TestCase):
             socket=function() return {bind=function() return true end,getsockname=function() return '127.0.0.1',49000 end,
               close=function() end,connect=function() return true end} end
           } end
-          package.preload['luci.jsonc']=function() return {stringify=function(s) published[#published+1]=s; return 'REDACTED' end} end
+          package.preload['luci.jsonc']=function() return {parse=function() return {outbounds={{protocol='vless'}}} end,
+            stringify=function(s) published[#published+1]=s; return 'REDACTED' end} end
           package.preload['luci.model.uci']=function() return {cursor=function() return cursor end} end
           package.preload['luci.sys']=function() return {call=function(cmd)
             calls[#calls+1]=cmd
+            if invalid and cmd:find('run -test',1,true) then
+              files['/tmp/pingwatch-manager/work/core.err']='REALITY invalid public key SECRET_VALUE'; return 1
+            end
             if cmd:find('curl',1,true) then files['/tmp/pingwatch-manager/work/probe.txt']='204:0.120' end
             return 0
           end} end
-          dofile=function() return policy end
+          arg={}
+          dofile=function(p) if p:find('diagnostics',1,true) then return core_diag end; return policy end
         ''')
+        self.lua.globals().core_diag=self.lua.execute((ROOT/'root/usr/share/pingwatch-manager/diagnostics.lua').read_text())
+        self.lua.globals().invalid=invalid
+        if check_only:
+            self.lua.execute("arg={'--check-configs'}; files['/tmp/pingwatch-manager/results.json']='PREVIOUS_RESULTS'")
         self.lua.execute(code)
         self.lua.execute('''
           local s=published[#published]; assert(s.complete and not s.running and not s.route_changed)
-          assert(s.rows[1].state=='healthy' and s.rows[1].latency_ms==120)
-          assert(s.recommendation.node=='node1')
+          if invalid then
+            assert(s.rows[1].state=='error' and s.rows[1].diagnostic.code=='reality_key_invalid')
+            assert(s.rows[1].diagnostic.exit_code==1 and s.recommendation.node==nil)
+            assert(files['/tmp/pingwatch-manager/work/core.err']==nil and #killed==0)
+          elseif arg[1]=='--check-configs' then
+            assert(s.rows[1].state=='config_valid' and s.rows[1].latency_ms==nil)
+            assert(s.recommendation.node==nil and s.mode=='config_check_only')
+            assert(files['/tmp/pingwatch-manager/results.json']=='PREVIOUS_RESULTS')
+            assert(#killed==0)
+            for _,cmd in ipairs(calls) do assert(not cmd:find('curl',1,true)) end
+          else
+            assert(s.rows[1].state=='healthy' and s.rows[1].latency_ms==120)
+            assert(s.recommendation.node=='node1')
+            assert(#killed==1 and killed[1]==123)
+          end
           assert(files['/etc/config/passwall2']=='SECRET_CONFIG')
           assert(files['/tmp/pingwatch-manager/work/config/passwall2']==nil)
           assert(files['/tmp/pingwatch-manager/work/core.json']==nil)
           assert(not directories['/tmp/pingwatch-manager/lock'])
-          assert(#killed==1 and killed[1]==123)
           for _,cmd in ipairs(calls) do assert(not cmd:find('uci set',1,true) and not cmd:find('restart',1,true)) end
+        ''')
+
+    def test_config_only_preserves_health_results(self):
+        self.test_worker_mock_end_to_end(check_only=True)
+
+    def test_core_error_is_classified_and_private_log_removed(self):
+        self.test_worker_mock_end_to_end(check_only=True,invalid=True)
+
+    def test_fixed_diagnostic_labels_and_shape(self):
+        self.lua.globals().diag=self.lua.execute((ROOT/'root/usr/share/pingwatch-manager/diagnostics.lua').read_text())
+        self.lua.execute('''
+          assert(diag.classify('XHTTP mode invalid SECRET_UUID',1)=='xhttp_mode_invalid')
+          assert(diag.classify('REALITY invalid public key SECRET_URL',1)=='reality_key_invalid')
+          assert(diag.classify('SECRET_VALUE SECRET_LINK',1)=='unclassified_core_error')
+          assert(diag.classify('SECRET_UUID',124)=='validation_timeout')
+          local shape=diag.shape({outbounds={{protocol='vless',settings={uuid='SECRET'},streamSettings={network='xhttp',security='reality'}},
+            {protocol='SECRET_URL',streamSettings={network='SECRET_URL',security='SECRET_UUID'}}}},'Xray')
+          assert(shape[1].transport=='xhttp' and shape[1].security=='reality' and shape[1].settings==nil)
+          assert(shape[2].protocol=='other' and shape[2].transport=='unspecified' and shape[2].security=='unspecified')
         ''')
 
     def test_lua51_syntax(self):
@@ -139,7 +179,7 @@ class ManagerTests(unittest.TestCase):
     def test_package_contents(self):
         import subprocess, tarfile, io
         subprocess.run([sys.executable,str(ROOT/'build.py')],check=True,capture_output=True)
-        ipk=ROOT.parent/'dist/luci-app-pingwatch-manager_0.1.0-5_all.ipk'
+        ipk=ROOT.parent/'dist/luci-app-pingwatch-manager_0.1.0-6_all.ipk'
         with tarfile.open(ipk,'r:gz') as outer:
             with tarfile.open(fileobj=io.BytesIO(outer.extractfile('./data.tar.gz').read()),mode='r:gz') as data:
                 names=data.getnames()
