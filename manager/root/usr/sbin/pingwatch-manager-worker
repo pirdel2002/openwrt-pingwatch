@@ -8,9 +8,10 @@ local diagnostics=dofile('/usr/share/pingwatch-manager/diagnostics.lua')
 local direct=dofile('/usr/share/pingwatch-manager/direct.lua')
 local stability=dofile('/usr/share/pingwatch-manager/stability.lua')
 local check_only=arg[1]=='--check-configs'
-assert(not arg[1] or check_only,'unknown_argument')
+local direct_only=arg[1]=='--check-direct'
+assert(not arg[1] or check_only or direct_only,'unknown_argument')
 local base='/tmp/pingwatch-manager'
-local result_name=check_only and 'config-checks' or 'results'
+local result_name=direct_only and 'direct-checks' or check_only and 'config-checks' or 'results'
 local work=base..'/work'
 local child
 local function quote(s) return "'"..s:gsub("'", "'\\''").."'" end
@@ -33,7 +34,7 @@ end
 local function direct_test()
   local function evidence()
     local raw=sys.exec('timeout 5 nft -s -j list ruleset 2>/dev/null')
-    local verified,why=direct.firewall(direct.decode(raw,json.parse))
+    local verified,why,proof=direct.firewall(direct.decode(raw,json.parse))
     if not verified then return nil,'firewall_'..(why or 'bypass_unverified') end
     local legacy
     if sys.call('command -v iptables-legacy-save >/dev/null 2>&1')==0 then legacy='iptables-legacy-save'
@@ -48,8 +49,9 @@ local function direct_test()
     local dev=direct.wan(status,proto)
     if not dev then return nil,'wan_unverified' end
     local route=sys.exec('timeout 5 ip -4 route get 1.1.1.1 2>/dev/null') or ''
-    if route:match('%f[%a]dev%s+([%w_.:%-]+)')~=dev then return nil,'wan_route_unverified' end
-    return {rules=raw,device=dev,proto=proto,route=route}
+    local route_proof=direct.route(route,dev)
+    if not route_proof then return nil,'wan_route_unverified' end
+    return {rules=proof,device=dev,proto=proto,route=route_proof}
   end
   local before,reason=evidence()
   if not before then return {state='unverified',path_verified=false,reason=reason} end
@@ -63,18 +65,28 @@ local function direct_test()
       if not nx.setgid(9912) then os.exit(126) end
       nx.exec('/usr/bin/timeout','-k','2','10','/usr/bin/curl','--disable','--silent','--ipv4','--proxy','','--noproxy','*',
         '--interface','if!'..before.device,'--doh-url','https://1.1.1.1/dns-query',
-        '--connect-timeout','4','--max-time','7','--output','/dev/null','--write-out','%{http_code}:%{time_total}',url)
+        '--connect-timeout','4','--max-time','7','--output','/dev/null','--write-out',
+        '%{http_code}:%{time_total}:%{time_namelookup}:%{time_connect}:%{time_appconnect}',url)
       os.exit(127)
     end
     local _,status,rc=nx.waitpid(child); child=nil
-    local code,t=(fs.readfile(work..'/probe.txt') or ''):match('^(%d%d%d):([%d.]+)$')
+    local code,t,dns,connect,tls=(fs.readfile(work..'/probe.txt') or ''):match('^(%d%d%d):([%d.]+):([%d.]+):([%d.]+):([%d.]+)$')
+    dns,connect,tls=tonumber(dns),tonumber(connect),tonumber(tls)
+    local failure=rc==0 and code=='204' and 'none' or rc==28 and dns==0 and 'dns_timeout' or
+      rc==28 and connect==0 and 'connect_timeout' or rc==28 and tls==0 and 'tls_timeout' or
+      rc==28 and 'request_timeout' or (rc==35 or rc==60) and 'tls_error' or 'request_failed'
     probes[#probes+1]={endpoint=i,ok=status=='exited' and rc==0 and code=='204',http_code=tonumber(code),exit_code=rc,
-      ms=tonumber(t) and math.floor(tonumber(t)*1000)}
+      failure=failure,dns_ms=dns and math.floor(dns*1000),connect_ms=connect and math.floor(connect*1000),
+      tls_ms=tls and math.floor(tls*1000),ms=tonumber(t) and math.floor(tonumber(t)*1000)}
     fs.unlink(work..'/probe.txt')
   end
-  local after=evidence()
-  if not after or after.rules~=before.rules or after.device~=before.device or after.proto~=before.proto or after.route~=before.route then
-    return {state='unverified',path_verified=false,reason='path_changed',probes=probes}
+  local after,post_reason=evidence()
+  local changed=not after and 'postcheck_'..(post_reason or 'failed') or
+    after.rules~=before.rules and 'firewall_path_changed' or
+    (after.device~=before.device or after.proto~=before.proto) and 'wan_path_changed' or
+    after.route~=before.route and 'wan_route_changed'
+  if changed then
+    return {state='unverified',path_verified=false,reason=changed,probes=probes}
   end
   -- Unsupported curl features/setup failures are unknown, not WAN failure.
   for _,p in ipairs(probes) do if p.exit_code==2 or p.exit_code==4 or p.exit_code==126 or p.exit_code==127 then
@@ -89,10 +101,10 @@ local ok=pcall(function()
   assert(fs.writefile(work..'/config/passwall2',snapshot))
   local cursor=require('luci.model.uci').cursor(work..'/config')
   local nodes,subs=policy.inventory(cursor)
-  local report={phase=1,mode=check_only and 'config_check_only' or 'observe_only',started_at=os.time(),running=true,rows={},subscriptions=subs,
+  local report={phase=1,mode=direct_only and 'direct_check_only' or check_only and 'config_check_only' or 'observe_only',started_at=os.time(),running=true,rows={},subscriptions=subs,
     guard_ok=policy.guard(cursor),direct={state='unverified'},route_changed=false}
   publish(report)
-  for _,n in ipairs(nodes) do
+  for _,n in ipairs(direct_only and {} or nodes) do
     local row={id=n.id,protocol=n.protocol,core=n.core,state='unsupported'}
     if n.id:match('^[%w_]+$') and (n.core=='Xray' or n.core=='Sing-Box' or n.core=='sing-box') then
       -- Reserve a currently free loopback port; core readiness is checked below.
@@ -157,9 +169,10 @@ local ok=pcall(function()
   end
   local unchanged=fs.readfile('/etc/config/passwall2')==snapshot
   report.running=false; report.finished_at=os.time(); report.snapshot_current=unchanged
-  report.recommendation=policy.recommend(report.rows,report.guard_ok and unchanged,report.direct.state=='healthy' and report.direct.path_verified==true)
+  report.recommendation=direct_only and {state='unknown',reason='direct_check_only'} or
+    policy.recommend(report.rows,report.guard_ok and unchanged,report.direct.state=='healthy' and report.direct.path_verified==true)
   report.complete=unchanged
-  if not check_only then
+  if not check_only and not direct_only then
     local context
     if type(sys.exec)=='function' then context=(sys.exec('sha256sum '..quote(work..'/config/passwall2')..' 2>/dev/null') or ''):match('^(%x+)') end
     local old=json.parse(fs.readfile(base..'/history.json') or '')

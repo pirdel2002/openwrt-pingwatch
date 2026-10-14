@@ -1,5 +1,5 @@
 #!/usr/bin/lua
 local fs=require('nixio.fs')
-assert(not arg[1] or arg[1]=='--configs','unknown_argument')
-local name=arg[1]=='--configs' and 'config-checks' or 'results'
+assert(not arg[1] or arg[1]=='--configs' or arg[1]=='--direct','unknown_argument')
+local name=arg[1]=='--direct' and 'direct-checks' or arg[1]=='--configs' and 'config-checks' or 'results'
 print(fs.readfile('/tmp/pingwatch-manager/'..name..'.json') or '{"phase":1,"mode":"observe_only","running":false,"rows":[],"error":"not_run"}')

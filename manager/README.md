@@ -1,6 +1,6 @@
 # PingWatch Passwall Manager — advisory manager
 
-Version 0.3.0-2. A separate package beside PingWatch 1.5.3; does not replace its SMS/LED service.
+Version 0.3.0-3. A separate package beside PingWatch 1.5.3; does not replace its SMS/LED service.
 
 ## Safety and scope
 
@@ -19,7 +19,7 @@ Version 0.3.0-2. A separate package beside PingWatch 1.5.3; does not replace its
 Keep a local backup of `/etc/config/passwall2` and existing PingWatch config. Do not share either file. Copy only the IPK to the router, then:
 
 ```sh
-opkg install /root/luci-app-pingwatch-manager_0.3.0-2_all.ipk
+opkg install /root/luci-app-pingwatch-manager_0.3.0-3_all.ipk
 /etc/init.d/rpcd restart
 ```
 
@@ -66,6 +66,10 @@ Local tests: `python manager/tests/test_manager.py` (test-only `lupa` Lua 5.1 ru
 Before automatic management: verify exact installed generator signatures, mark bypass, core PID cleanup, unchanged config/firewall/active default, two-endpoint results, cancellation, and inventory after adding/removing a subscription. Verify direct connectivity independently before implementing fallback. Any live step requires explicit router authorization.
 
 ## Stability and direct path in 0.3.0
+
+Release 0.3.0-3 compares canonical output-path evidence rather than the whole raw ruleset. Only output hooks, traversed chains and rules up to the GID bypass are included; counter values, rule handles and unrelated dynamic sets are excluded. Every before/after ruleset still independently passes the full conservative output-path proof. WAN route comparison retains device, gateway, source and routing table while ignoring cache metadata. Actual proof, WAN identity or route changes still prevent verification.
+
+For a short isolated check, run `/usr/sbin/pingwatch-manager-worker --check-direct`, then `/usr/sbin/pingwatch-manager-results --direct`. This preserves the main health report and history, does not contribute stability rounds, and creates no change plan. Direct probes now report fixed DNS/connect/TLS timings and failure labels; raw errors and addresses remain private. A timeout is not evidence of healthy direct connectivity.
 
 Release 0.3.0-2 preserves JSON null verdicts before calling luci.jsonc (otherwise `return: null` can disappear). It also recognizes inline conntrack-state verdict maps containing only simple accept/drop/return/continue verdicts. Dynamic maps, jumps in maps and unknown output actions remain unsupported. Detailed failure labels still contain no rules, addresses or credentials.
 

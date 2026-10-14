@@ -26,7 +26,7 @@ function M.firewall(ruleset)
   for _,entry in ipairs(ruleset.nftables) do
     local c=entry.chain
     if c and (c.family=='inet' or c.family=='ip') then
-      chains[key(c)]={rules={}}
+      chains[key(c)]={rules={},definition={hook=c.hook,type=c.type,prio=c.prio,policy=c.policy,dev=c.dev}}
       if c.hook=='output' then roots[#roots+1]=key(c) end
     end
   end
@@ -40,6 +40,7 @@ function M.firewall(ruleset)
     end
   end
   local seen_bypass=false
+  local proof={}
   local function only(e,name)
     if type(e)~='table' then return false end
     local count=0
@@ -68,7 +69,11 @@ function M.firewall(ruleset)
   local function safe(k,stack)
     if stack[k] or not chains[k] then return false,'chain_graph_unknown' end
     stack[k]=true
+    proof[k]={definition=chains[k].definition,rules={}}
     for _,expr in ipairs(chains[k].rules) do
+      local filtered={}
+      for _,e in ipairs(expr) do if not only(e,'counter') then filtered[#filtered+1]=e end end
+      proof[k].rules[#proof[k].rules+1]=filtered
       if bypass(expr) then seen_bypass=true; stack[k]=nil; return true end
       for _,e in ipairs(expr or {}) do
         for name,v in pairs(e) do
@@ -87,9 +92,25 @@ function M.firewall(ruleset)
     stack[k]=nil; return true
   end
   if #roots==0 then return false,'output_hooks_missing' end
+  table.sort(roots)
   for _,k in ipairs(roots) do local ok,reason=safe(k,{}); if not ok then return false,reason end end
-  if seen_bypass then return true end
+  local function canonical(v)
+    if type(v)=='string' then return 'string:'..#v..':'..v end
+    if type(v)~='table' then return type(v)..':'..tostring(v) end
+    local keys,out={},{}
+    for k in pairs(v) do keys[#keys+1]=k end
+    table.sort(keys,function(a,b) return type(a)..tostring(a)<type(b)..tostring(b) end)
+    for _,k in ipairs(keys) do out[#out+1]=canonical(k)..'='..canonical(v[k]) end
+    return '{'..table.concat(out,';')..'}'
+  end
+  if seen_bypass then return true,nil,canonical(proof) end
   return false,'gid_bypass_missing'
+end
+function M.route(raw,dev)
+  local first=(raw or ''):match('([^\n]+)') or ''
+  if first:match('%f[%a]dev%s+([%w_.:%-]+)')~=dev then return nil end
+  return table.concat({dev,first:match('%f[%a]via%s+([%d.]+)') or '',
+    first:match('%f[%a]src%s+([%d.]+)') or '',first:match('%f[%a]table%s+([%w_%-]+)') or 'main'},'|')
 end
 function M.wan(status,proto)
   if not ({dhcp=true,static=true,pppoe=true})[proto] or not status or status.up~=true then return nil end

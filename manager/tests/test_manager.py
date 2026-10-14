@@ -90,7 +90,7 @@ class ManagerTests(unittest.TestCase):
           assert(policy.plan(report,cursor,1000).reason=='direct_unverified')
         ''')
 
-    def test_worker_mock_end_to_end(self,check_only=False,invalid=False):
+    def test_worker_mock_end_to_end(self,check_only=False,invalid=False,direct_only=False,direct_success=False,route_changed=False):
         code=(ROOT/'root/usr/sbin/pingwatch-manager-worker').read_text().split('\n',1)[1]
         self.lua.execute('''
           files={['/etc/config/passwall2']='SECRET_CONFIG'}; directories={}; published={}; calls={}; killed={}
@@ -135,10 +135,49 @@ class ManagerTests(unittest.TestCase):
         self.lua.globals().invalid=invalid
         if check_only:
             self.lua.execute("arg={'--check-configs'}; files['/tmp/pingwatch-manager/results.json']='PREVIOUS_RESULTS'")
+        if direct_only:
+            self.lua.execute("arg={'--check-direct'}; files['/tmp/pingwatch-manager/results.json']='PREVIOUS_RESULTS'")
+        self.lua.globals().direct_success=direct_success
+        self.lua.globals().route_changed=route_changed
+        if direct_success:
+            self.lua.execute('''
+              nft_payload={nftables={
+                {chain={family='inet',table='passwall2',name='out',hook='output'}},
+                {rule={family='inet',table='passwall2',chain='out',expr={
+                  {match={op='==',left={meta={key='skgid'}},right=9912}},{['return']=true}}}}
+              }}
+              local get=cursor.get
+              function cursor:get(config,id,key) if config=='network' then return 'dhcp' end; return get(self,config,id,key) end
+              local j=require('luci.jsonc'); local parse=j.parse
+              j.parse=function(raw) if raw=='NFT' then return nft_payload elseif raw=='WAN' then return {up=true,l3_device='eth0'} end; return parse(raw) end
+              local routes=0
+              require('luci.sys').exec=function(cmd)
+                if cmd:find('nft -s',1,true) then return 'NFT' end
+                if cmd:find('ubus',1,true) then return 'WAN' end
+                if cmd:find('route get',1,true) then routes=routes+1
+                  return '1.1.1.1 via 10.0.0.1 dev eth0 src '..(route_changed and routes>1 and '10.0.0.3' or '10.0.0.2') end
+                return ''
+              end
+              local nx=require('nixio')
+              nx.fork=function() files['/tmp/pingwatch-manager/work/probe.txt']='204:0.120:0.010:0.020:0.090'; return 123 end
+              nx.waitpid=function() return 123,'exited',0 end
+            ''')
         self.lua.execute(code)
         self.lua.execute('''
           local s=published[#published]; assert(s.complete and not s.running and not s.route_changed)
-          if invalid then
+          if arg[1]=='--check-direct' then
+            assert(s.mode=='direct_check_only' and #s.rows==0 and s.plan==nil and s.stability==nil)
+            assert(s.recommendation.node==nil)
+            if direct_success and not route_changed then
+              assert(s.direct.state=='healthy' and s.direct.path_verified==true)
+              assert(s.direct.probes[1].dns_ms==10 and s.direct.probes[1].failure=='none')
+            elseif route_changed then
+              assert(s.direct.state=='unverified' and s.direct.reason=='wan_route_changed')
+            else assert(s.direct.state=='unverified') end
+            assert(files['/tmp/pingwatch-manager/results.json']=='PREVIOUS_RESULTS')
+            assert(files['/tmp/pingwatch-manager/history.json']==nil and #killed==0)
+            for _,cmd in ipairs(calls) do assert(not cmd:find('generate.lua',1,true)) end
+          elseif invalid then
             assert(s.rows[1].state=='error' and s.rows[1].diagnostic.code=='reality_key_invalid')
             assert(s.rows[1].diagnostic.exit_code==1 and s.recommendation.node==nil)
             assert(files['/tmp/pingwatch-manager/work/core.err']==nil and #killed==0)
@@ -162,6 +201,15 @@ class ManagerTests(unittest.TestCase):
 
     def test_config_only_preserves_health_results(self):
         self.test_worker_mock_end_to_end(check_only=True)
+
+    def test_direct_only_preserves_health_and_history(self):
+        self.test_worker_mock_end_to_end(direct_only=True)
+
+    def test_direct_only_success_with_verified_evidence(self):
+        self.test_worker_mock_end_to_end(direct_only=True,direct_success=True)
+
+    def test_direct_route_change_prevents_verification(self):
+        self.test_worker_mock_end_to_end(direct_only=True,direct_success=True,route_changed=True)
 
     def test_direct_firewall_proof_fails_closed(self):
         self.lua.globals().direct=self.lua.execute((ROOT/'root/usr/share/pingwatch-manager/direct.lua').read_text())
@@ -200,6 +248,27 @@ class ManagerTests(unittest.TestCase):
           history,summary=stable.update(history,report,string.rep('b',64)); assert(not summary.ready and summary.rounds==1)
           report.finished_at=3000; history,summary=stable.update(history,report,string.rep('b',64)); assert(summary.rounds==1)
           history,summary=stable.update(history,report,nil); assert(not summary.ready)
+        ''')
+
+    def test_direct_proof_ignores_unrelated_state_but_detects_output_changes(self):
+        self.lua.globals().direct=self.lua.execute((ROOT/'root/usr/share/pingwatch-manager/direct.lua').read_text())
+        self.lua.execute('''
+          local chain={chain={family='inet',table='passwall2',name='out',hook='output',prio=-1,policy='accept'}}
+          local bypass={rule={family='inet',table='passwall2',chain='out',expr={
+            {match={op='==',left={meta={key='skgid'}},right=9912}},{counter={packets=1}},{['return']={_null=true}}}}}
+          local behind={rule={family='inet',table='passwall2',chain='out',expr={{redirect={port=1234}}}}}
+          local data={nftables={chain,bypass,behind,{set={family='inet',table='passwall2',name='dynamic',elem={'SECRET_IP'}}}}}
+          local ok,_,proof=direct.firewall(data); assert(ok)
+          bypass.rule.handle=999; bypass.rule.expr[2].counter.packets=99
+          data.nftables[4].set.elem={'OTHER_IP'}; behind.rule.expr[1].redirect.port=9000
+          local ok2,_,proof2=direct.firewall(data); assert(ok2 and proof==proof2)
+          chain.chain.prio=-2
+          local _,_,changed=direct.firewall(data); assert(changed~=proof)
+          chain.chain.prio=-1; bypass.rule.expr[1].match.right=1234; assert(not direct.firewall(data))
+          local a=direct.route('1.1.1.1 via 10.0.0.1 dev eth0 src 10.0.0.2 uid 0\\n cache expires 10sec','eth0')
+          local b=direct.route('1.1.1.1 via 10.0.0.1 dev eth0 src 10.0.0.2 uid 0\\n cache expires 9sec','eth0')
+          assert(a==b and a~=direct.route('1.1.1.1 via 10.0.0.3 dev eth0 src 10.0.0.2','eth0'))
+          assert(direct.route('1.1.1.1 dev wg0','eth0')==nil)
         ''')
 
     def test_nft_null_verdicts_preserved_without_rewriting_strings(self):
@@ -310,7 +379,7 @@ class ManagerTests(unittest.TestCase):
     def test_package_contents(self):
         import subprocess, tarfile, io
         subprocess.run([sys.executable,str(ROOT/'build.py')],check=True,capture_output=True)
-        ipk=ROOT.parent/'dist/luci-app-pingwatch-manager_0.3.0-2_all.ipk'
+        ipk=ROOT.parent/'dist/luci-app-pingwatch-manager_0.3.0-3_all.ipk'
         with tarfile.open(ipk,'r:gz') as outer:
             with tarfile.open(fileobj=io.BytesIO(outer.extractfile('./data.tar.gz').read()),mode='r:gz') as data:
                 names=data.getnames()

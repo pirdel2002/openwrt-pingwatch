@@ -1,5 +1,7 @@
 # Validation record
 
+Release 0.3.0-3: 23 local tests passed, including direct-only report isolation, successful mocked direct-probe evidence, real WAN-route change rejection, irrelevant counter/set changes versus output-hook changes, and route cache normalization. User-supplied 0.3.0-2 output reached direct probes but both timed out and the broad evidence comparison reported path_changed. The corrected comparison and DNS/connect/TLS timing diagnostics still require router acceptance; healthy direct connectivity has not been demonstrated.
+
 Release 0.3.0-2: 19 local tests passed. New regression fixtures cover native JSON null verdicts while preserving quoted text, safe inline conntrack verdict maps, and rejection of unsafe/dynamic maps. User output shows nftables 1.1.1 JSON/stateless support and output GID 9912 matches; actual direct-path verification still awaits the corrected parser on the router.
 
 Release 0.3.0-1: 17 local Lua/Python tests and mocked LuCI rendering passed. New coverage includes conservative direct-firewall recognition, rejection of unknown output NAT, WAN validation, three-round median ranking, minimum spacing, history expiry/config reset, and direct fallback blocked by unknown errors or unverified direct health. Native nft/ubus/curl/group-changing child execution still requires router acceptance. No active route changes or deployments were performed by the agent.
