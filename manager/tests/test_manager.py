@@ -126,12 +126,20 @@ class ManagerTests(unittest.TestCase):
     def test_package_contents(self):
         import subprocess, tarfile, io
         subprocess.run([sys.executable,str(ROOT/'build.py')],check=True,capture_output=True)
-        ipk=ROOT.parent/'dist/luci-app-pingwatch-manager_0.1.0-1_all.ipk'
+        ipk=ROOT.parent/'dist/luci-app-pingwatch-manager_0.1.0-2_all.ipk'
         with tarfile.open(ipk,'r:gz') as outer:
             with tarfile.open(fileobj=io.BytesIO(outer.extractfile('./data.tar.gz').read()),mode='r:gz') as data:
                 names=data.getnames()
                 self.assertFalse(any('etc/config/' in n for n in names))
                 self.assertEqual(data.getmember('./usr/sbin/pingwatch-manager-worker').mode,0o755)
                 self.assertIn('./www/luci-static/resources/view/pingwatch/manager.js',names)
+                self.assertTrue(data.getmember('./usr/share/pingwatch-manager').isdir())
+                # Emulate opkg: unlike tarfile.extractall(), file creation does
+                # not create missing parent directories implicitly.
+                created={'.'}
+                for member in data.getmembers():
+                    parent=Path(member.name).parent.as_posix()
+                    self.assertIn(parent,created,member.name)
+                    if member.isdir(): created.add(Path(member.name).as_posix())
 
 if __name__ == '__main__': unittest.main(verbosity=2)

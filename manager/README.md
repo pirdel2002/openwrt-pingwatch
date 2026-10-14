@@ -1,6 +1,6 @@
 # PingWatch Passwall Manager — phase 1
 
-Version 0.1.0-1. A separate package beside PingWatch 1.5.3; does not replace its SMS/LED service.
+Version 0.1.0-2. A separate package beside PingWatch 1.5.3; does not replace its SMS/LED service.
 
 ## Safety and scope
 
@@ -19,7 +19,7 @@ Version 0.1.0-1. A separate package beside PingWatch 1.5.3; does not replace its
 Keep a local backup of `/etc/config/passwall2` and existing PingWatch config. Do not share either file. Copy only the IPK to the router, then:
 
 ```sh
-opkg install /root/luci-app-pingwatch-manager_0.1.0-1_all.ipk
+opkg install /root/luci-app-pingwatch-manager_0.1.0-2_all.ipk
 /etc/init.d/rpcd restart
 ```
 

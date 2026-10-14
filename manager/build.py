@@ -4,7 +4,7 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parent
 OUT=ROOT.parent/'dist'
 OUT.mkdir(exist_ok=True)
-VERSION='0.1.0-1'
+VERSION='0.1.0-2'
 control=f'''Package: luci-app-pingwatch-manager
 Version: {VERSION}
 Architecture: all
@@ -16,6 +16,16 @@ Description: PingWatch Passwall Manager observe-only test worker
 def archive(entries):
     buf=io.BytesIO()
     with tarfile.open(fileobj=buf,mode='w',format=tarfile.USTAR_FORMAT) as t:
+        directories=set()
+        for name,_,_ in entries:
+            parent=Path(name).parent
+            while parent.as_posix()!='.':
+                directories.add(parent.as_posix())
+                parent=parent.parent
+        for name in sorted(directories, key=lambda n:(n.count('/'),n)):
+            h=tarfile.TarInfo('./'+name+'/'); h.type=tarfile.DIRTYPE
+            h.mode=0o755; h.mtime=0
+            t.addfile(h)
         for name,data,mode in sorted(entries):
             h=tarfile.TarInfo(name); h.size=len(data); h.mode=mode; h.mtime=0
             t.addfile(h,io.BytesIO(data))
