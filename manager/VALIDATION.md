@@ -1,5 +1,7 @@
 # Validation record
 
+Release 0.3.0-1: 17 local Lua/Python tests and mocked LuCI rendering passed. New coverage includes conservative direct-firewall recognition, rejection of unknown output NAT, WAN validation, three-round median ranking, minimum spacing, history expiry/config reset, and direct fallback blocked by unknown errors or unverified direct health. Native nft/ubus/curl/group-changing child execution still requires router acceptance. No active route changes or deployments were performed by the agent.
+
 Release 0.2.0-1: 14 local Lua/Python tests and mocked LuCI rendering passed. New coverage includes exact plan scope, protected rules, inactive shunt, stale/incomplete results, deleted candidates, unchanged defaults and small-gain suppression. Probe details and stale-plan display are exercised by the UI mock. No live router writes were performed. Direct fallback, recurring monitoring and automatic apply are not implemented in this release.
 
 2026-10-14: local Windows execution only; no router connection or deployment.

@@ -17,14 +17,18 @@ return view.extend({
         nodes.forEach(function(n){if(n.state in counts) counts[n.state]++;});
         summary.textContent='وضعیت: '+(s.error || (s.running?'در حال آزمون':s.complete?'پایان آزمون':'ناقص'))+
           ' | سلامت قوانین شانت: '+(s.guard_ok?'تأیید':'تأیید نشده')+
-          ' | اتصال مستقیم: تأیید نشده | اشتراک‌ها: '+subscriptions.length.toLocaleString('fa-IR')+
+          ' | اتصال مستقیم: '+(s.direct && s.direct.path_verified && s.direct.state==='healthy'?'سالم؛ مسیر تأیید شده':
+          s.direct && s.direct.path_verified && s.direct.state==='unhealthy'?'ناموفق در مسیر مستقیم':'تأیید نشده')+
+          ' | اشتراک‌ها: '+subscriptions.length.toLocaleString('fa-IR')+
           (s.recommendation?' | پیشنهاد: '+(s.recommendation.node || s.recommendation.reason):'');
         summary.textContent+=' | سالم: '+counts.healthy.toLocaleString('fa-IR')+' | ناموفق: '+counts.unhealthy.toLocaleString('fa-IR')+
           ' | خطا: '+counts.error.toLocaleString('fa-IR');
         var reasons={tests_incomplete:'آزمون ناقص است',results_stale:'نتایج قدیمی شده‌اند',shunt_or_snapshot_changed:'تنظیمات شانت تغییر کرده‌اند',
           active_node_is_not_rulenode:'شانت rulenode مسیر فعال نیست',candidate_missing:'گزینه حذف شده است',current_is_best:'default فعلی بهترین گزینه است',
           gain_too_small:'بهبود کافی نیست؛ default فعلی حفظ می‌شود',healthy_candidate:'گزینهٔ سالم موجود است',faster_candidate:'گزینهٔ سریع‌تر موجود است',
-          incomplete_tests:'برخی آزمون‌ها قطعی نیستند',direct_unverified:'اتصال مستقیم تأیید نشده است'};
+          incomplete_tests:'برخی آزمون‌ها قطعی نیستند',direct_unverified:'اتصال مستقیم تأیید نشده است',
+          stability_pending:'در انتظار سه نوبت پایدار',direct_fallback:'هیچ گزینهٔ سالمی در سه نوبت نیست؛ اتصال مستقیم تأیید شده است'};
+        if(s.stability) summary.textContent+=' | نوبت‌های پایداری: '+s.stability.rounds.toLocaleString('fa-IR')+' / ۳';
         var age=s.finished_at?(Date.now()/1000-s.finished_at):null;
         plan.textContent=age!=null && (age>300 || age<0)?'پیشنهاد منقضی شده؛ آزمون را دوباره اجرا کنید.':s.plan?
           'برنامه: '+(reasons[s.plan.reason]||s.plan.reason)+(s.plan.state==='awaiting_approval'?

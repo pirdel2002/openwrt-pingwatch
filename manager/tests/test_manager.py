@@ -59,6 +59,7 @@ class ManagerTests(unittest.TestCase):
           sections[1].default_node='old'
           local report={mode='observe_only',complete=true,running=false,finished_at=1000,snapshot_current=true,
             rows={{id='node1',state='healthy',latency_ms=100}}}
+          report.stability={ready=true,rows=report.rows}
           local plan=policy.plan(report,cursor,1100)
           assert(plan.state=='awaiting_approval' and plan.config=='passwall2' and plan.section=='rulenode')
           assert(plan.option=='default_node' and plan.expected=='old' and plan.node=='node1' and plan.applied==false)
@@ -80,10 +81,12 @@ class ManagerTests(unittest.TestCase):
           sections[1].default_node='old'
           local report={mode='observe_only',complete=true,finished_at=1000,snapshot_current=true,
             rows={{id='node1',state='healthy',latency_ms=900},{id='old',state='healthy',latency_ms=1000}}}
+          report.stability={ready=true,rows=report.rows}
           assert(policy.plan(report,cursor,1000).reason=='gain_too_small')
           report.rows[1].latency_ms=500; assert(policy.plan(report,cursor,1000).reason=='faster_candidate')
           sections[1].default_node='node1'; assert(policy.plan(report,cursor,1000).reason=='current_is_best')
           report.rows={{id='node1',state='unhealthy'}}; report.direct={state='healthy'}
+          report.stability.rows=report.rows
           assert(policy.plan(report,cursor,1000).reason=='direct_unverified')
         ''')
 
@@ -119,9 +122,16 @@ class ManagerTests(unittest.TestCase):
             return 0
           end} end
           arg={}
-          dofile=function(p) if p:find('diagnostics',1,true) then return core_diag end; return policy end
+          dofile=function(p)
+            if p:find('diagnostics',1,true) then return core_diag end
+            if p:find('/direct.lua',1,true) then return direct_module end
+            if p:find('/stability.lua',1,true) then return stability_module end
+            return policy
+          end
         ''')
         self.lua.globals().core_diag=self.lua.execute((ROOT/'root/usr/share/pingwatch-manager/diagnostics.lua').read_text())
+        self.lua.globals().direct_module=self.lua.execute((ROOT/'root/usr/share/pingwatch-manager/direct.lua').read_text())
+        self.lua.globals().stability_module=self.lua.execute((ROOT/'root/usr/share/pingwatch-manager/stability.lua').read_text())
         self.lua.globals().invalid=invalid
         if check_only:
             self.lua.execute("arg={'--check-configs'}; files['/tmp/pingwatch-manager/results.json']='PREVIOUS_RESULTS'")
@@ -152,6 +162,60 @@ class ManagerTests(unittest.TestCase):
 
     def test_config_only_preserves_health_results(self):
         self.test_worker_mock_end_to_end(check_only=True)
+
+    def test_direct_firewall_proof_fails_closed(self):
+        self.lua.globals().direct=self.lua.execute((ROOT/'root/usr/share/pingwatch-manager/direct.lua').read_text())
+        self.lua.execute('''
+          local function chain(name) return {chain={family='inet',table='passwall2',name=name,hook='output'}} end
+          local function rule(name,expr) return {rule={family='inet',table='passwall2',chain=name,expr=expr}} end
+          local bypass={{match={op='==',left={meta={key='skgid'}},right=9912}},{counter={}},{['return']=true}}
+          local rules={nftables={chain('nat_output'),rule('nat_output',bypass),rule('nat_output',{{redirect={port=1234}}})}}
+          assert(direct.firewall(rules))
+          bypass[1].match.right=0; assert(not direct.firewall(rules)); bypass[1].match.right=9912
+          rules.nftables[#rules.nftables+1]={chain={family='ip',table='custom',name='out',hook='output'}}
+          rules.nftables[#rules.nftables+1]={rule={family='ip',table='custom',chain='out',expr={{dnat={addr='SECRET_IP'}}}}}
+          assert(not direct.firewall(rules))
+          assert(not direct.firewall({nftables={}}))
+          assert(direct.wan({up=true,l3_device='pppoe-wan'},'pppoe')=='pppoe-wan')
+          assert(direct.wan({up=true,l3_device='wg0'},'wireguard')==nil)
+          assert(direct.wan({up=false,l3_device='eth0'},'dhcp')==nil)
+          assert(direct.wan({up=true,l3_device='eth0;SECRET'},'dhcp')==nil)
+        ''')
+
+    def test_three_round_stability_and_context_reset(self):
+        self.lua.globals().stable=self.lua.execute((ROOT/'root/usr/share/pingwatch-manager/stability.lua').read_text())
+        self.lua.execute('''
+          local context=string.rep('a',64)
+          local history,summary
+          local report={complete=true,snapshot_current=true,direct={state='healthy',path_verified=true},rows={{id='node1',state='healthy',latency_ms=100}}}
+          for i=1,3 do
+            report.finished_at=1000+i*60; report.rows[1].latency_ms=({100,900,200})[i]
+            history,summary=stable.update(history,report,context)
+            assert(summary.ready==(i==3) and summary.rounds==i)
+          end
+          assert(summary.rows[1].latency_ms==200 and summary.direct_verified)
+          history,summary=stable.update(history,report,context); assert(summary.rounds==3)
+          report.finished_at=1250; report.rows[1].state='unhealthy'
+          history,summary=stable.update(history,report,context); assert(summary.rows[1].state=='unstable')
+          history,summary=stable.update(history,report,string.rep('b',64)); assert(not summary.ready and summary.rounds==1)
+          report.finished_at=3000; history,summary=stable.update(history,report,string.rep('b',64)); assert(summary.rounds==1)
+          history,summary=stable.update(history,report,nil); assert(not summary.ready)
+        ''')
+
+    def test_direct_fallback_requires_stable_complete_failures(self):
+        self.lua.execute('''
+          sections[#sections+1]={['.name']='@global[0]',['.type']='global',node='rulenode'}
+          sections[1].default_node='node1'
+          local report={mode='observe_only',complete=true,snapshot_current=true,finished_at=1000,rows={}}
+          assert(policy.plan(report,cursor,1000).reason=='stability_pending')
+          report.stability={ready=true,direct_verified=true,rows={{id='node1',state='unhealthy'}}}
+          local p=policy.plan(report,cursor,1000); assert(p.node=='_direct' and p.reason=='direct_fallback' and p.applied==false)
+          report.stability.direct_verified=false; assert(policy.plan(report,cursor,1000).node==nil)
+          report.stability.direct_verified=true; report.stability.rows[1]={id='node1',state='error',reason='adapter_failed'}
+          assert(policy.plan(report,cursor,1000).node==nil)
+          report.stability.rows[1]={id='node1',state='error',reason='core_config_invalid',diagnostic={exit_code=23}}
+          assert(policy.plan(report,cursor,1000).node=='_direct')
+        ''')
 
     def test_core_error_is_classified_and_private_log_removed(self):
         self.test_worker_mock_end_to_end(check_only=True,invalid=True)
@@ -213,7 +277,7 @@ class ManagerTests(unittest.TestCase):
     def test_package_contents(self):
         import subprocess, tarfile, io
         subprocess.run([sys.executable,str(ROOT/'build.py')],check=True,capture_output=True)
-        ipk=ROOT.parent/'dist/luci-app-pingwatch-manager_0.2.0-1_all.ipk'
+        ipk=ROOT.parent/'dist/luci-app-pingwatch-manager_0.3.0-1_all.ipk'
         with tarfile.open(ipk,'r:gz') as outer:
             with tarfile.open(fileobj=io.BytesIO(outer.extractfile('./data.tar.gz').read()),mode='r:gz') as data:
                 names=data.getnames()

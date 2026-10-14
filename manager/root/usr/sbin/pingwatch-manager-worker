@@ -5,6 +5,8 @@ local json=require('luci.jsonc')
 local sys=require('luci.sys')
 local policy=dofile('/usr/share/pingwatch-manager/policy.lua')
 local diagnostics=dofile('/usr/share/pingwatch-manager/diagnostics.lua')
+local direct=dofile('/usr/share/pingwatch-manager/direct.lua')
+local stability=dofile('/usr/share/pingwatch-manager/stability.lua')
 local check_only=arg[1]=='--check-configs'
 assert(not arg[1] or check_only,'unknown_argument')
 local base='/tmp/pingwatch-manager'
@@ -17,7 +19,7 @@ local function stop()
 end
 local function clean()
   stop()
-  for _,f in ipairs({'core.json','core.err','probe.txt','adapter.err','config/passwall2','cache/cache_pingwatch_test.txt'}) do fs.unlink(work..'/'..f) end
+  for _,f in ipairs({'core.json','core.err','probe.txt','adapter.err','legacy.rules','config/passwall2','cache/cache_pingwatch_test.txt'}) do fs.unlink(work..'/'..f) end
   fs.rmdir(work..'/cache'); fs.rmdir(work..'/config'); fs.rmdir(work); fs.rmdir(base..'/lock')
 end
 nx.umask('0077')
@@ -27,6 +29,57 @@ assert(fs.mkdir(base..'/lock','0700'), 'worker_already_running')
 local function publish(s)
   assert(fs.writefile(base..'/'..result_name..'.new',json.stringify(s)))
   assert(fs.rename(base..'/'..result_name..'.new',base..'/'..result_name..'.json'))
+end
+local function direct_test()
+  local function evidence()
+    local raw=sys.exec('timeout 5 nft -s -j list ruleset 2>/dev/null')
+    if not direct.firewall(json.parse(raw or '')) then return nil,'firewall_bypass_unverified' end
+    local legacy
+    if sys.call('command -v iptables-legacy-save >/dev/null 2>&1')==0 then legacy='iptables-legacy-save'
+    elseif sys.call('command -v iptables-save >/dev/null 2>&1')==0 and
+      not (sys.exec('iptables-save --version 2>/dev/null') or ''):find('nf_tables',1,true) then legacy='iptables-save' end
+    if legacy then
+      if sys.call('timeout 5 '..legacy..' > '..quote(work..'/legacy.rules')..' 2>/dev/null')~=0 or
+        (fs.readfile(work..'/legacy.rules') or ''):find('%-A%s') then return nil,'legacy_firewall_unverified' end
+    end
+    local status=json.parse(sys.exec('timeout 5 ubus call network.interface.wan status 2>/dev/null') or '')
+    local proto=require('luci.model.uci').cursor():get('network','wan','proto')
+    local dev=direct.wan(status,proto)
+    if not dev then return nil,'wan_unverified' end
+    local route=sys.exec('timeout 5 ip -4 route get 1.1.1.1 2>/dev/null') or ''
+    if route:match('%f[%a]dev%s+([%w_.:%-]+)')~=dev then return nil,'wan_route_unverified' end
+    return {rules=raw,device=dev,proto=proto,route=route}
+  end
+  local before,reason=evidence()
+  if not before then return {state='unverified',path_verified=false,reason=reason} end
+  local probes={}
+  for i,url in ipairs({'https://www.google.com/generate_204','https://cp.cloudflare.com/generate_204'}) do
+    child=assert(nx.fork())
+    if child==0 then
+      local output=assert(nx.open(work..'/probe.txt','w', '0600'))
+      local null=assert(nx.open('/dev/null','w')); nx.dup(output,nx.stdout); nx.dup(null,nx.stderr)
+      for _,name in ipairs({'http_proxy','https_proxy','all_proxy','HTTP_PROXY','HTTPS_PROXY','ALL_PROXY'}) do nx.setenv(name) end
+      if not nx.setgid(9912) then os.exit(126) end
+      nx.exec('/usr/bin/timeout','-k','2','10','/usr/bin/curl','--disable','--silent','--ipv4','--proxy','','--noproxy','*',
+        '--interface','if!'..before.device,'--doh-url','https://1.1.1.1/dns-query',
+        '--connect-timeout','4','--max-time','7','--output','/dev/null','--write-out','%{http_code}:%{time_total}',url)
+      os.exit(127)
+    end
+    local _,status,rc=nx.waitpid(child); child=nil
+    local code,t=(fs.readfile(work..'/probe.txt') or ''):match('^(%d%d%d):([%d.]+)$')
+    probes[#probes+1]={endpoint=i,ok=status=='exited' and rc==0 and code=='204',http_code=tonumber(code),exit_code=rc,
+      ms=tonumber(t) and math.floor(tonumber(t)*1000)}
+    fs.unlink(work..'/probe.txt')
+  end
+  local after=evidence()
+  if not after or after.rules~=before.rules or after.device~=before.device or after.proto~=before.proto or after.route~=before.route then
+    return {state='unverified',path_verified=false,reason='path_changed',probes=probes}
+  end
+  -- Unsupported curl features/setup failures are unknown, not WAN failure.
+  for _,p in ipairs(probes) do if p.exit_code==2 or p.exit_code==4 or p.exit_code==126 or p.exit_code==127 then
+    return {state='unverified',path_verified=false,reason='direct_probe_unavailable',probes=probes} end end
+  return {state=probes[1].ok and probes[2].ok and 'healthy' or 'unhealthy',path_verified=true,
+    method='wan_bound_gid9912_https_doh',probes=probes}
 end
 local ok=pcall(function()
   assert(fs.mkdir(work,'0700')); assert(fs.mkdir(work..'/config','0700'))
@@ -66,7 +119,7 @@ local ok=pcall(function()
           if ready then
             local probes={}
             for _,url in ipairs({'https://www.google.com/generate_204','https://cp.cloudflare.com/generate_204'}) do
-              local rc=sys.call("env -u ALL_PROXY -u HTTPS_PROXY -u HTTP_PROXY curl --silent --show-error --noproxy '' --proxy socks5h://127.0.0.1:"..port.." --connect-timeout 4 --max-time 7 --output /dev/null --write-out '%{http_code}:%{time_total}' "..quote(url)..' > '..quote(work..'/probe.txt')..' 2>/dev/null')
+              local rc=sys.call("env -u ALL_PROXY -u HTTPS_PROXY -u HTTP_PROXY curl --disable --silent --show-error --noproxy '' --proxy socks5h://127.0.0.1:"..port.." --connect-timeout 4 --max-time 7 --output /dev/null --write-out '%{http_code}:%{time_total}' "..quote(url)..' > '..quote(work..'/probe.txt')..' 2>/dev/null')
               local code,t=(fs.readfile(work..'/probe.txt') or ''):match('^(%d%d%d):([%d.]+)$')
               local failure=rc==0 and code=='204' and 'none' or rc==0 and 'http_status' or rc==28 and 'timeout' or
                 (rc==35 or rc==60) and 'tls_error' or rc==5 and 'proxy_dns_error' or rc==6 and 'dns_error' or
@@ -96,11 +149,25 @@ local ok=pcall(function()
     fs.unlink(work..'/cache/cache_pingwatch_test.txt')
     report.rows[#report.rows+1]=row; publish(report)
   end
+  if not check_only then
+    local tested,result=pcall(direct_test)
+    report.direct=tested and result or {state='unverified',path_verified=false,reason='direct_probe_error'}
+    stop()
+  end
   local unchanged=fs.readfile('/etc/config/passwall2')==snapshot
   report.running=false; report.finished_at=os.time(); report.snapshot_current=unchanged
-  report.recommendation=policy.recommend(report.rows,report.guard_ok and unchanged,false)
+  report.recommendation=policy.recommend(report.rows,report.guard_ok and unchanged,report.direct.state=='healthy' and report.direct.path_verified==true)
   report.complete=unchanged
-  if not check_only then report.plan=policy.plan(report,cursor,os.time()) end
+  if not check_only then
+    local context
+    if type(sys.exec)=='function' then context=(sys.exec('sha256sum '..quote(work..'/config/passwall2')..' 2>/dev/null') or ''):match('^(%x+)') end
+    local old=json.parse(fs.readfile(base..'/history.json') or '')
+    local history
+    history,report.stability=stability.update(old,report,context)
+    assert(fs.writefile(base..'/history.new',json.stringify(history)))
+    assert(fs.rename(base..'/history.new',base..'/history.json'))
+    report.plan=policy.plan(report,cursor,os.time())
+  end
   publish(report)
 end)
 clean()
