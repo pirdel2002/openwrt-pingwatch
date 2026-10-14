@@ -124,10 +124,20 @@ class ManagerTests(unittest.TestCase):
         self.lua.execute((ROOT/'root/usr/share/pingwatch-manager/generate.lua').read_text())
         self.lua.execute("assert(output=='SAFE_OUTPUT' and config.outbounds[1].streamSettings.sockopt.mark==255)")
 
+    def test_diagnostic_never_prints_error_body(self):
+        self.lua.execute('''
+          arg={'/tmp/pingwatch-manager/work/config','node1','49000'}
+          package.preload['luci.model.uci']=function() error('/private/util_xray.lua:123: SECRET_UUID SECRET_URL') end
+          io.stderr={write=function(_,s) diagnostic=s end}
+          os.exit=function(code) exit_code=code end
+        ''')
+        self.lua.execute((ROOT/'root/usr/share/pingwatch-manager/generate.lua').read_text())
+        self.lua.execute("assert(exit_code==1 and diagnostic:find('PWDIAG:snapshot:',1,true) and not diagnostic:find('SECRET',1,true))")
+
     def test_package_contents(self):
         import subprocess, tarfile, io
         subprocess.run([sys.executable,str(ROOT/'build.py')],check=True,capture_output=True)
-        ipk=ROOT.parent/'dist/luci-app-pingwatch-manager_0.1.0-3_all.ipk'
+        ipk=ROOT.parent/'dist/luci-app-pingwatch-manager_0.1.0-4_all.ipk'
         with tarfile.open(ipk,'r:gz') as outer:
             with tarfile.open(fileobj=io.BytesIO(outer.extractfile('./data.tar.gz').read()),mode='r:gz') as data:
                 names=data.getnames()

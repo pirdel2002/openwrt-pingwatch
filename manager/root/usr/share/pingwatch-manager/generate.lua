@@ -1,15 +1,21 @@
 -- Run only in a private subprocess against a copied UCI configuration.
+local stage='arguments'
+local function generate()
 local dir, id, port = arg[1], arg[2], tonumber(arg[3])
 assert(dir:match('^/tmp/pingwatch%-manager/work/config$'))
 assert(id:match('^[%w_]+$') and port and port>=1024 and port<=65535)
+stage='snapshot'
 local uci = require('luci.model.uci').cursor(dir)
 local n = assert(uci:get_all('passwall2',id))
 assert(n['.type']=='nodes' and n.protocol and n.protocol:sub(1,1)~='_')
 -- Chained, interface and plugin nodes need a separate compatibility adapter.
 for _, k in ipairs({'preproxy_node','to_node','outbound_node','outbound_node_iface','iface'}) do
+  stage='guard_'..k
   assert(not n[k] or n[k]=='' or n[k]=='nil')
 end
+stage='guard_plugin'
 assert(not n.plugin or n.plugin=='' or n.plugin=='none')
+stage='api_load'
 local api = require('luci.passwall2.api')
 local reader=uci
 uci=setmetatable({}, {__index=function(_,key)
@@ -34,13 +40,17 @@ end
 -- other shell mutations, including nested run_socks and firewall operations.
 api.sys.call=function(cmd)
   if cmd:match("^echo '[%w_]+' >> /tmp/pingwatch%-manager/work/direct_node_list$") then return 0 end
+  stage='blocked_side_effect'
   error('generator_side_effect')
 end
 local module_name = ({Xray='util_xray',['Sing-Box']='util_sing-box',['sing-box']='util_sing-box'})[n.type]
 assert(module_name)
 arg={}
+stage='generator_load'
 local generator=require('luci.passwall2.'..module_name)
+stage='generate_config'
 local result=assert(generator.gen_config({node=id,local_socks_address='127.0.0.1',local_socks_port=tostring(port),loglevel='error',log='0'}))
+stage='validate_config'
 local c=assert(api.jsonc.parse(result))
 assert(c.inbounds and #c.inbounds==1)
 local inbound=c.inbounds[1]
@@ -57,3 +67,11 @@ end
 assert(not c.endpoints or #c.endpoints==0)
 if n.type=='Xray' then c.log={loglevel='none'} else c.log={disabled=true} end
 print(api.jsonc.stringify(c))
+end
+local ok,err=pcall(generate)
+if not ok then
+  -- Never output the error body: native errors may contain credentials.
+  local source,line=tostring(err):match('([%w_%-]+%.lua):(%d+):')
+  io.stderr:write('PWDIAG:'..stage..':'..(source or 'unknown')..':'..(line or '0')..'\n')
+  os.exit(1)
+end

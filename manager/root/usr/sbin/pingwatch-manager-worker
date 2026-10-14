@@ -13,7 +13,7 @@ local function stop()
 end
 local function clean()
   stop()
-  for _,f in ipairs({'core.json','probe.txt','config/passwall2'}) do fs.unlink(work..'/'..f) end
+  for _,f in ipairs({'core.json','probe.txt','adapter.err','config/passwall2'}) do fs.unlink(work..'/'..f) end
   fs.rmdir(work..'/config'); fs.rmdir(work); fs.rmdir(base..'/lock')
 end
 nx.umask('0077')
@@ -39,8 +39,9 @@ local ok=pcall(function()
       -- Reserve a currently free loopback port; core readiness is checked below.
       local sock=assert(nx.socket('inet','stream'))
       assert(sock:bind('127.0.0.1',0)); local _,port=sock:getsockname(); sock:close()
-      local cmd='timeout 15 lua /usr/share/pingwatch-manager/generate.lua '..quote(work..'/config')..' '..quote(n.id)..' '..port..' > '..quote(work..'/core.json')..' 2>/dev/null'
-      if sys.call(cmd)==0 then
+      local cmd='timeout 15 lua /usr/share/pingwatch-manager/generate.lua '..quote(work..'/config')..' '..quote(n.id)..' '..port..' > '..quote(work..'/core.json')..' 2> '..quote(work..'/adapter.err')
+      local adapter_rc=sys.call(cmd)
+      if adapter_rc==0 then
         local binary=n.core=='Xray' and '/usr/bin/xray' or '/usr/bin/sing-box'
         local check=n.core=='Xray' and 'run -test -c' or 'check -c'
         if sys.call('timeout 10 '..binary..' '..check..' '..quote(work..'/core.json')..' >/dev/null 2>&1')==0 then
@@ -66,9 +67,14 @@ local ok=pcall(function()
           else row.state='error'; row.reason='core_not_ready' end
           stop()
         else row.state='error'; row.reason='core_config_invalid' end
-      else row.reason='adapter_not_supported' end
+      else
+        local stage,source,line=(fs.readfile(work..'/adapter.err') or ''):match('PWDIAG:([%w_]+):([%w_.%-]+):(%d+)')
+        row.reason='adapter_failed'; row.adapter_exit=adapter_rc
+        if stage then row.diagnostic={stage=stage,source=source,line=tonumber(line)} end
+        row.state=stage and stage:match('^guard_') and 'unsupported' or 'error'
+      end
     end
-    fs.unlink(work..'/core.json'); fs.unlink(work..'/probe.txt')
+    fs.unlink(work..'/core.json'); fs.unlink(work..'/probe.txt'); fs.unlink(work..'/adapter.err')
     report.rows[#report.rows+1]=row; publish(report)
   end
   local unchanged=fs.readfile('/etc/config/passwall2')==snapshot
