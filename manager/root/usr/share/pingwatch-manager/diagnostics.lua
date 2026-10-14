@@ -29,7 +29,7 @@ function M.shape(c,core)
     if i>8 then break end
     local stream=o.streamSettings or {}
     local p=o.protocol or o.type
-    local t=stream.network or (o.transport or {}).type
+    local t=stream.method or stream.network or (o.transport or {}).type
     local security=stream.security
     if core~='Xray' and o.tls then security=o.tls.reality and 'reality' or 'tls' end
     out[#out+1]={protocol=protocols[p] and p or 'other',transport=transports[t] and t or 'unspecified',security=securities[security] and security or 'unspecified'}

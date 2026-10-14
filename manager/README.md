@@ -1,6 +1,6 @@
-# PingWatch Passwall Manager — phase 1
+# PingWatch Passwall Manager — advisory manager
 
-Version 0.1.0-6. A separate package beside PingWatch 1.5.3; does not replace its SMS/LED service.
+Version 0.2.0-1. A separate package beside PingWatch 1.5.3; does not replace its SMS/LED service.
 
 ## Safety and scope
 
@@ -19,7 +19,7 @@ Version 0.1.0-6. A separate package beside PingWatch 1.5.3; does not replace its
 Keep a local backup of `/etc/config/passwall2` and existing PingWatch config. Do not share either file. Copy only the IPK to the router, then:
 
 ```sh
-opkg install /root/luci-app-pingwatch-manager_0.1.0-6_all.ipk
+opkg install /root/luci-app-pingwatch-manager_0.2.0-1_all.ipk
 /etc/init.d/rpcd restart
 ```
 
@@ -48,6 +48,14 @@ opkg remove luci-app-pingwatch-manager
 ```
 
 ## Build and validation
+
+### Advisory plan in 0.2.0
+
+Each completed health batch now records a plan for **only** `passwall2.rulenode.default_node`, including its current value and the proposed Node. This plan never writes UCI or restarts Passwall. It requires the active global Node to be `rulenode`, the protected rules to stay direct, a current snapshot and fresh results (five minutes). A working default is retained unless improvement exceeds both 20 percent and 100 milliseconds. A missing/deleted candidate blocks the plan.
+
+Plans describe the snapshot at batch completion; the page marks them expired after five minutes. Any future apply operation must independently revalidate the current full config, Node identity and health before writing. There is no apply command in this release. Direct fallback remains blocked until a separate direct-path verification is implemented. Automatic switching and recurring monitoring remain pending.
+
+Each HTTPS probe now reports its fixed endpoint number, HTTP status, curl exit code, measured duration and a fixed failure category. Failed/informational Nodes stay in the inventory and are naturally excluded from healthy candidates. No manual informational-node exclusion list is maintained.
 
 `python manager/build.py` produces IPK, source archive and SHA256SUMS under `dist/`. For SDK builds, place `manager/` under `package/pingwatch-manager` and build `package/pingwatch-manager/compile`.
 

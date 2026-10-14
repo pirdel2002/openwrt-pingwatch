@@ -1,5 +1,7 @@
 # Validation record
 
+Release 0.2.0-1: 14 local Lua/Python tests and mocked LuCI rendering passed. New coverage includes exact plan scope, protected rules, inactive shunt, stale/incomplete results, deleted candidates, unchanged defaults and small-gain suppression. Probe details and stale-plan display are exercised by the UI mock. No live router writes were performed. Direct fallback, recurring monitoring and automatic apply are not implemented in this release.
+
 2026-10-14: local Windows execution only; no router connection or deployment.
 
 - 8 Python/Lua 5.1 tests passed: dynamic inventory/redaction, protected shunt rules, guarded direct fallback, healthy-node ranking, generator mutation blocking and mark, mocked worker execution and cleanup, Lua syntax, package contents/modes.

@@ -68,9 +68,14 @@ local ok=pcall(function()
             for _,url in ipairs({'https://www.google.com/generate_204','https://cp.cloudflare.com/generate_204'}) do
               local rc=sys.call("env -u ALL_PROXY -u HTTPS_PROXY -u HTTP_PROXY curl --silent --show-error --noproxy '' --proxy socks5h://127.0.0.1:"..port.." --connect-timeout 4 --max-time 7 --output /dev/null --write-out '%{http_code}:%{time_total}' "..quote(url)..' > '..quote(work..'/probe.txt')..' 2>/dev/null')
               local code,t=(fs.readfile(work..'/probe.txt') or ''):match('^(%d%d%d):([%d.]+)$')
-              probes[#probes+1]={ok=rc==0 and code=='204',ms=tonumber(t) and math.floor(tonumber(t)*1000)}
+              local failure=rc==0 and code=='204' and 'none' or rc==0 and 'http_status' or rc==28 and 'timeout' or
+                (rc==35 or rc==60) and 'tls_error' or rc==5 and 'proxy_dns_error' or rc==6 and 'dns_error' or
+                rc==7 and 'connect_error' or 'request_failed'
+              probes[#probes+1]={endpoint=#probes+1,ok=rc==0 and code=='204',http_code=tonumber(code),exit_code=rc,
+                failure=failure,ms=tonumber(t) and math.floor(tonumber(t)*1000)}
             end
             row.state=probes[1].ok and probes[2].ok and 'healthy' or 'unhealthy'
+            row.probes=probes
             if row.state=='healthy' then row.latency_ms=math.max(probes[1].ms,probes[2].ms) end
           else row.state='error'; row.reason='core_not_ready' end
           stop()
@@ -95,6 +100,7 @@ local ok=pcall(function()
   report.running=false; report.finished_at=os.time(); report.snapshot_current=unchanged
   report.recommendation=policy.recommend(report.rows,report.guard_ok and unchanged,false)
   report.complete=unchanged
+  if not check_only then report.plan=policy.plan(report,cursor,os.time()) end
   publish(report)
 end)
 clean()

@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 PKG_NAME:=luci-app-pingwatch-manager
-PKG_VERSION:=0.1.0
-PKG_RELEASE:=6
+PKG_VERSION:=0.2.0
+PKG_RELEASE:=1
 include $(INCLUDE_DIR)/package.mk
 define Package/luci-app-pingwatch-manager
   SECTION:=luci

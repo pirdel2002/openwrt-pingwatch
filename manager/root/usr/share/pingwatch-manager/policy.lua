@@ -31,4 +31,30 @@ function M.recommend(rows, guard, direct_verified)
   if direct_verified then return {state='candidate', node='_direct'} end
   return {state='unknown', reason='direct_unverified'}
 end
+-- Advisory only: describe exactly one possible future write. No mutations.
+function M.plan(report,cursor,now)
+  local function blocked(reason) return {state='blocked',reason=reason,applied=false} end
+  if report.mode~='observe_only' or not report.complete or report.running then return blocked('tests_incomplete') end
+  if not report.finished_at or now<report.finished_at or now-report.finished_at>300 then return blocked('results_stale') end
+  if not report.snapshot_current or not M.guard(cursor) then return blocked('shunt_or_snapshot_changed') end
+  if cursor:get('passwall2','@global[0]','node')~='rulenode' then return blocked('active_node_is_not_rulenode') end
+  local choice=M.recommend(report.rows or {},true,false)
+  if not choice.node then return blocked(choice.reason or 'no_candidate') end
+  local id=choice.node
+  if not id:match('^[%w_]+$') or cursor:get('passwall2',id)~='nodes' then return blocked('candidate_missing') end
+  local current=cursor:get('passwall2','rulenode','default_node')
+  if current==id then return {state='keep',reason='current_is_best',node=id,applied=false} end
+  local selected,current_row
+  for _,r in ipairs(report.rows or {}) do
+    if r.id==id then selected=r end
+    if r.id==current then current_row=r end
+  end
+  -- Keep a working default unless the gain exceeds 20% and 100 ms.
+  if current_row and current_row.state=='healthy' and
+    current_row.latency_ms-selected.latency_ms<=math.max(100,current_row.latency_ms*0.2) then
+    return {state='keep',reason='gain_too_small',node=current,applied=false}
+  end
+  return {state='awaiting_approval',reason=current_row and current_row.state=='healthy' and 'faster_candidate' or 'healthy_candidate',
+    config='passwall2',section='rulenode',option='default_node',expected=current,node=id,applied=false}
+end
 return M

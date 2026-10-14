@@ -16,7 +16,7 @@ class ManagerTests(unittest.TestCase):
           }
           cursor={}
           function cursor:foreach(config,kind,fn) for _,s in ipairs(sections) do if s['.type']==kind then fn(s) end end end
-          function cursor:get(config,id,key) for _,s in ipairs(sections) do if s['.name']==id then return s[key] end end end
+          function cursor:get(config,id,key) for _,s in ipairs(sections) do if s['.name']==id then return key and s[key] or s['.type'] end end end
         ''')
         self.lua.globals().policy = self.lua.execute((ROOT/'root/usr/share/pingwatch-manager/policy.lua').read_text())
 
@@ -51,6 +51,40 @@ class ManagerTests(unittest.TestCase):
         self.lua.execute('''
           local rows={{id='a',state='healthy',latency_ms=300},{id='b',state='healthy',latency_ms=90},{id='c',state='unhealthy',latency_ms=1}}
           assert(policy.recommend(rows,true,false).node=='b')
+        ''')
+
+    def test_plan_scope_and_freshness(self):
+        self.lua.execute('''
+          sections[#sections+1]={['.name']='@global[0]',['.type']='global',node='rulenode'}
+          sections[1].default_node='old'
+          local report={mode='observe_only',complete=true,running=false,finished_at=1000,snapshot_current=true,
+            rows={{id='node1',state='healthy',latency_ms=100}}}
+          local plan=policy.plan(report,cursor,1100)
+          assert(plan.state=='awaiting_approval' and plan.config=='passwall2' and plan.section=='rulenode')
+          assert(plan.option=='default_node' and plan.expected=='old' and plan.node=='node1' and plan.applied==false)
+          assert(sections[1].default_node=='old' and sections[1].Iran=='_direct')
+          assert(policy.plan(report,cursor,1301).reason=='results_stale')
+          assert(policy.plan(report,cursor,999).reason=='results_stale')
+          report.running=true; assert(policy.plan(report,cursor,1100).state=='blocked'); report.running=false
+          report.mode='config_check_only'; assert(policy.plan(report,cursor,1100).state=='blocked'); report.mode='observe_only'
+          report.snapshot_current=false; assert(policy.plan(report,cursor,1100).state=='blocked'); report.snapshot_current=true
+          sections[1].Devices='node1'; assert(policy.plan(report,cursor,1100).state=='blocked'); sections[1].Devices='_direct'
+          sections[#sections].node='other'; assert(policy.plan(report,cursor,1100).reason=='active_node_is_not_rulenode')
+          sections[#sections].node='rulenode'; table.remove(sections,2)
+          assert(policy.plan(report,cursor,1100).reason=='candidate_missing')
+        ''')
+
+    def test_plan_avoids_small_changes_and_unverified_direct(self):
+        self.lua.execute('''
+          sections[#sections+1]={['.name']='@global[0]',['.type']='global',node='rulenode'}
+          sections[1].default_node='old'
+          local report={mode='observe_only',complete=true,finished_at=1000,snapshot_current=true,
+            rows={{id='node1',state='healthy',latency_ms=900},{id='old',state='healthy',latency_ms=1000}}}
+          assert(policy.plan(report,cursor,1000).reason=='gain_too_small')
+          report.rows[1].latency_ms=500; assert(policy.plan(report,cursor,1000).reason=='faster_candidate')
+          sections[1].default_node='node1'; assert(policy.plan(report,cursor,1000).reason=='current_is_best')
+          report.rows={{id='node1',state='unhealthy'}}; report.direct={state='healthy'}
+          assert(policy.plan(report,cursor,1000).reason=='direct_unverified')
         ''')
 
     def test_worker_mock_end_to_end(self,check_only=False,invalid=False):
@@ -179,7 +213,7 @@ class ManagerTests(unittest.TestCase):
     def test_package_contents(self):
         import subprocess, tarfile, io
         subprocess.run([sys.executable,str(ROOT/'build.py')],check=True,capture_output=True)
-        ipk=ROOT.parent/'dist/luci-app-pingwatch-manager_0.1.0-6_all.ipk'
+        ipk=ROOT.parent/'dist/luci-app-pingwatch-manager_0.2.0-1_all.ipk'
         with tarfile.open(ipk,'r:gz') as outer:
             with tarfile.open(fileobj=io.BytesIO(outer.extractfile('./data.tar.gz').read()),mode='r:gz') as data:
                 names=data.getnames()
