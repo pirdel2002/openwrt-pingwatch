@@ -2,4 +2,24 @@
 local fs=require('nixio.fs')
 assert(not arg[1] or arg[1]=='--configs' or arg[1]=='--direct','unknown_argument')
 local name=arg[1]=='--direct' and 'direct-checks' or arg[1]=='--configs' and 'config-checks' or 'results'
-print(fs.readfile('/tmp/pingwatch-manager/'..name..'.json') or '{"phase":1,"mode":"observe_only","running":false,"rows":[],"error":"not_run"}')
+local raw=fs.readfile('/tmp/pingwatch-manager/'..name..'.json')
+if raw then
+  -- Resolve display names from current local configuration, including reports
+  -- produced before remark support. Never expose other node options.
+  local ok, enriched=pcall(function()
+    local json=require('luci.jsonc')
+    local report=json.parse(raw)
+    local cursor=require('uci').cursor()
+    if type(report)=='table' and type(report.rows)=='table' then
+      for _, row in ipairs(report.rows) do
+        if type(row.id)=='string' then
+          local remark=cursor:get('passwall2',row.id,'remarks')
+          if type(remark)=='string' then row.remark=remark end
+        end
+      end
+    end
+    return json.stringify(report)
+  end)
+  if ok and enriched then raw=enriched end
+end
+print(raw or '{"phase":1,"mode":"observe_only","running":false,"rows":[],"error":"not_run"}')

@@ -132,7 +132,7 @@ local ok=pcall(function()
   local selected={}
   for _,n in ipairs(nodes) do if not target or n.id==target then selected[#selected+1]=n end end
   for _,n in ipairs(direct_only and {} or selected) do
-    local row={id=n.id,protocol=n.protocol,core=n.core,state='unsupported'}
+    local row={id=n.id,remark=n.remark,protocol=n.protocol,core=n.core,state='unsupported'}
     if n.id:match('^[%w_]+$') and (n.core=='Xray' or n.core=='Sing-Box' or n.core=='sing-box') then
       -- Reserve a currently free loopback port; core readiness is checked below.
       local sock=assert(nx.socket('inet','stream'))

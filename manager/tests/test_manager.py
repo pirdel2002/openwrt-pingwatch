@@ -11,7 +11,7 @@ class ManagerTests(unittest.TestCase):
         self.lua.execute('''
           sections={
             {['.name']='rulenode',['.type']='nodes',protocol='_shunt',PrivateIP='_direct',Iran='_direct',Devices='_direct'},
-            {['.name']='node1',['.type']='nodes',protocol='vless',type='Xray',password='SECRET'},
+            {['.name']='node1',['.type']='nodes',protocol='vless',type='Xray',password='SECRET',remarks='Display name'},
             {['.name']='sub1',['.type']='subscribe_list',url='SECRET_URL'}
           }
           cursor={}
@@ -22,7 +22,7 @@ class ManagerTests(unittest.TestCase):
 
     def test_dynamic_inventory_and_redaction(self):
         self.lua.execute('''
-          local n,s=policy.inventory(cursor); assert(#n==1 and #s==1 and n[1].password==nil and s[1].url==nil)
+          local n,s=policy.inventory(cursor); assert(#n==1 and #s==1 and n[1].password==nil and s[1].url==nil and n[1].remark=='Display name')
           table.remove(sections,2); table.remove(sections,2)
           sections[#sections+1]={['.name']='newnode',['.type']='nodes',protocol='trojan',type='Sing-Box'}
           local n,s=policy.inventory(cursor); assert(#n==1 and n[1].id=='newnode' and #s==0)
@@ -401,10 +401,25 @@ class ManagerTests(unittest.TestCase):
         self.lua.execute((ROOT/'root/usr/share/pingwatch-manager/generate.lua').read_text())
         self.lua.execute("assert(exit_code==1 and diagnostic:find('PWDIAG:snapshot:',1,true) and not diagnostic:find('SECRET',1,true))")
 
+    def test_results_resolves_current_remark_without_extra_options(self):
+        self.lua.execute("""
+          report={rows={{id='node1'}}}
+          package.preload['nixio.fs']=function() return {readfile=function() return 'stored' end} end
+          package.preload['luci.jsonc']=function() return {
+            parse=function() return report end,
+            stringify=function(r) assert(r.rows[1].remark=='Current name'); assert(r.rows[1].password==nil); return 'safe' end
+          } end
+          package.preload['uci']=function() return {cursor=function() return {get=function(self,c,id,key)
+            assert(c=='passwall2' and id=='node1' and key=='remarks'); return 'Current name'
+          end} end} end
+          arg={}; print=function(value) assert(value=='safe') end
+        """)
+        self.lua.execute((ROOT/'root/usr/sbin/pingwatch-manager-results').read_text(encoding='utf-8').split('\n',1)[1])
+
     def test_package_contents(self):
         import subprocess, tarfile, io
         subprocess.run([sys.executable,str(ROOT/'build.py')],check=True,capture_output=True)
-        ipk=ROOT.parent/'dist/luci-app-pingwatch_1.6.0-1_all.ipk'
+        ipk=ROOT.parent/'dist/luci-app-pingwatch_1.6.1-1_all.ipk'
         with tarfile.open(ipk,'r:gz') as outer:
             with tarfile.open(fileobj=io.BytesIO(outer.extractfile('./control.tar.gz').read()),mode='r:gz') as control:
                 self.assertIn(b'/etc/config/pingwatch\n',control.extractfile('./conffiles').read())

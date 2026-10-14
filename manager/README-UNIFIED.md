@@ -43,3 +43,8 @@ Results: `/usr/sbin/pingwatch-manager-results`; control status includes `last_ac
 Run `python manager/build.py` to produce unified IPK, complete source archive and SHA256SUMS. The build merges the frozen original source and the manager module, embeds its view as a tab and merges the ACL. The archive includes both source directories. For SDK builds keep `manager/` and `openwrt-pingwatch-1.5.3/` as siblings under the SDK package directory; Python 3 is needed for Build/Prepare.
 
 Local tests cover default-off packaging, one menu, preserved config conffiles/SMS helpers, toggle dispatch, transaction gating, scope checks, re-test failure, compare-before-write, rollback and concurrent-edit protection. Native LuCI rendering, native UCI transaction execution, actual apply and rollback have **not yet been validated on the router**. Earlier user-provided output did verify the isolated direct-WAN test and normal Node health checks.
+
+
+## 1.6.1 UI update
+
+Compact RTL status cards, accessible on/off switch, responsive striped results table, Persian failure labels, and healthy nodes sorted by response time. Node remarks replace IDs in the table, recommendation and proposed route. Existing reports resolve remarks locally without another test round. No routing policy changes.
