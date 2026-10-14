@@ -10,7 +10,7 @@ vm.runInNewContext('(function(){'+fs.readFileSync('manager/root/www/luci-static/
     }
     return Promise.resolve({stdout:JSON.stringify(empty?{rows:{},subscriptions:{}}:{complete:true,guard_ok:true,
     recommendation:{node:'n1'},finished_at:Date.now()/1000-(stale?301:0),plan:{state:'awaiting_approval',reason:'healthy_candidate',expected:'old',node:'n1'},
-    subscriptions:[{id:'s1'}],rows:[{id:'n1',remark:'نام آزمایشی',core:'Xray',protocol:'vless',state:'healthy',latency_ms:120,probes:[{ok:true},{ok:false,failure:'timeout'}]}]})});}},
+    subscriptions:[{id:'s1'}],rows:[{id:'n1',remark:'نام آزمایشی',subscription:'اشتراک آزمایشی',core:'Xray',protocol:'vless',state:'healthy',latency_ms:120,probes:[{ok:true},{ok:false,failure:'timeout'}]}]})});}},
 });
 view.render().then(async root=>{
   assert.equal(root.attrs.dir,'rtl'); assert.equal(view.handleSaveApply,null);
@@ -27,6 +27,7 @@ view.render().then(async root=>{
   assert(JSON.stringify(root.children[3]).includes('پایان مهلت'));
   assert(JSON.stringify(root.children[3]).includes('نام آزمایشی'));
   assert(!JSON.stringify(root.children[3]).includes('n1'));
+  assert(JSON.stringify(root.children[3]).includes('اشتراک آزمایشی'));
   stale=true; await poll(); assert(root.children[4].textContent.includes('منقضی'));
   empty=true; await poll(); assert.equal(root.children[3].children[0].children.length,2);
   console.log('LuCI view render/poll/read-only checks passed');

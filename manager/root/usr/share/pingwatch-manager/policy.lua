@@ -6,7 +6,7 @@ function M.inventory(cursor)
   end)
   cursor:foreach('passwall2', 'nodes', function(s)
     if type(s.protocol)=='string' and s.protocol:sub(1,1)~='_' then
-      nodes[#nodes+1] = {id=s['.name'], core=s.type, protocol=s.protocol, remark=type(s.remarks)=='string' and s.remarks or nil}
+      nodes[#nodes+1] = {id=s['.name'], core=s.type, protocol=s.protocol, remark=type(s.remarks)=='string' and s.remarks or nil, subscription=type(s.group)=='string' and s.group or nil}
     end
   end)
   table.sort(nodes, function(a,b) return a.id<b.id end)

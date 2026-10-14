@@ -4,7 +4,7 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parent
 OUT=ROOT.parent/'dist'
 OUT.mkdir(exist_ok=True)
-VERSION='1.6.1-1'
+VERSION='1.6.2-1'
 PACKAGE='luci-app-pingwatch'
 control=f'''Package: {PACKAGE}
 Version: {VERSION}

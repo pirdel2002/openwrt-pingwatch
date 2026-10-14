@@ -48,3 +48,8 @@ Local tests cover default-off packaging, one menu, preserved config conffiles/SM
 ## 1.6.1 UI update
 
 Compact RTL status cards, accessible on/off switch, responsive striped results table, Persian failure labels, and healthy nodes sorted by response time. Node remarks replace IDs in the table, recommendation and proposed route. Existing reports resolve remarks locally without another test round. No routing policy changes.
+
+
+## 1.6.2
+
+Show subscription name in a dedicated column, using the native Passwall2 node group (subscription remark). Nodes without a group display a manual/no-subscription label. Existing reports resolve current groups without rerunning tests. Subscription URLs are never read or exposed for this display.

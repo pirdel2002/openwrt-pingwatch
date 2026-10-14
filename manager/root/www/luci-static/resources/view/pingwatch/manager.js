@@ -58,7 +58,7 @@ return view.extend({
         plan.textContent=age!=null && (age>300 || age<0)?'پیشنهاد منقضی شده؛ آزمون را دوباره اجرا کنید.':s.plan?
           'برنامه: '+(reasons[s.plan.reason]||s.plan.reason)+(s.plan.state==='awaiting_approval'?
           '\nمسیر پیشنهادی: '+name(s.plan.node)+' | هنوز اعمال نشده':''):'هنوز برنامه‌ای ثبت نشده است.';
-        var rows=[E('tr',{},['نام کانفیگ','هسته / پروتکل','وضعیت','زمان پاسخ','جزئیات آزمون'].map(function(t){return E('th',{},t);} ))];
+        var rows=[E('tr',{},['نام کانفیگ','سابسکریپشن','هسته / پروتکل','وضعیت','زمان پاسخ','جزئیات آزمون'].map(function(t){return E('th',{},t);} ))];
         var labels={healthy:'سالم',unhealthy:'ناموفق',unsupported:'پشتیبانی نشده',error:'خطای آزمون'};
         var failures={tls_error:'خطای اتصال امن',timeout:'پایان مهلت',dns_timeout:'پاسخ‌ندادن DNS',none:'موفق',encryption_invalid:'رد تنظیمات توسط هسته',core_config_invalid:'تنظیمات ناسازگار',adapter_not_supported:'پشتیبانی نشده'};
         nodes.slice().sort(function(a,b){var rank={healthy:0,unhealthy:1,error:2,unsupported:3};return (rank[a.state]||0)-(rank[b.state]||0)||(a.latency_ms||0)-(b.latency_ms||0);}).forEach(function(n){
@@ -66,12 +66,13 @@ return view.extend({
           if(!detail)detail=failures[(n.diagnostic&&n.diagnostic.code)||n.reason]||'—';
           rows.push(E('tr',{},[
             E('td',{'class':'pwm-name'},n.remark||'کانفیگ بدون نام'),
+            E('td',{'style':'unicode-bidi:plaintext'},n.subscription||'دستی / بدون اشتراک'),
             E('td',{'class':'pwm-ltr'},(n.core||'—')+' / '+(n.protocol||'—')),
             E('td',{},[E('span',{'class':'pwm-badge '+n.state},labels[n.state]||'نامشخص')]),
             E('td',{},n.latency_ms==null?'—':n.latency_ms.toLocaleString('fa-IR')+' ms'),
             E('td',{},detail)]));
         });
-        if(!nodes.length)rows.push(E('tr',{},[E('td',{colspan:5},'هنوز نتیجه‌ای ثبت نشده است؛ پس از اجرای آزمون، کانفیگ‌ها اینجا نمایش داده می‌شوند.')]));
+        if(!nodes.length)rows.push(E('tr',{},[E('td',{colspan:6},'هنوز نتیجه‌ای ثبت نشده است؛ پس از اجرای آزمون، کانفیگ‌ها اینجا نمایش داده می‌شوند.')]));
         table.replaceChildren.apply(table,rows);
       }).catch(function(){summary.textContent='خواندن نتیجه ناموفق بود.';});
     }

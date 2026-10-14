@@ -11,7 +11,7 @@ class ManagerTests(unittest.TestCase):
         self.lua.execute('''
           sections={
             {['.name']='rulenode',['.type']='nodes',protocol='_shunt',PrivateIP='_direct',Iran='_direct',Devices='_direct'},
-            {['.name']='node1',['.type']='nodes',protocol='vless',type='Xray',password='SECRET',remarks='Display name'},
+            {['.name']='node1',['.type']='nodes',protocol='vless',type='Xray',password='SECRET',remarks='Display name',group='Subscription name'},
             {['.name']='sub1',['.type']='subscribe_list',url='SECRET_URL'}
           }
           cursor={}
@@ -22,7 +22,7 @@ class ManagerTests(unittest.TestCase):
 
     def test_dynamic_inventory_and_redaction(self):
         self.lua.execute('''
-          local n,s=policy.inventory(cursor); assert(#n==1 and #s==1 and n[1].password==nil and s[1].url==nil and n[1].remark=='Display name')
+          local n,s=policy.inventory(cursor); assert(#n==1 and #s==1 and n[1].password==nil and s[1].url==nil and n[1].remark=='Display name' and n[1].subscription=='Subscription name')
           table.remove(sections,2); table.remove(sections,2)
           sections[#sections+1]={['.name']='newnode',['.type']='nodes',protocol='trojan',type='Sing-Box'}
           local n,s=policy.inventory(cursor); assert(#n==1 and n[1].id=='newnode' and #s==0)
@@ -407,10 +407,10 @@ class ManagerTests(unittest.TestCase):
           package.preload['nixio.fs']=function() return {readfile=function() return 'stored' end} end
           package.preload['luci.jsonc']=function() return {
             parse=function() return report end,
-            stringify=function(r) assert(r.rows[1].remark=='Current name'); assert(r.rows[1].password==nil); return 'safe' end
+            stringify=function(r) assert(r.rows[1].remark=='Current name'); assert(r.rows[1].subscription=='Subscription name'); assert(r.rows[1].password==nil); return 'safe' end
           } end
           package.preload['uci']=function() return {cursor=function() return {get=function(self,c,id,key)
-            assert(c=='passwall2' and id=='node1' and key=='remarks'); return 'Current name'
+            assert(c=='passwall2' and id=='node1'); if key=='remarks' then return 'Current name' end; assert(key=='group'); return 'Subscription name'
           end} end} end
           arg={}; print=function(value) assert(value=='safe') end
         """)
@@ -419,7 +419,7 @@ class ManagerTests(unittest.TestCase):
     def test_package_contents(self):
         import subprocess, tarfile, io
         subprocess.run([sys.executable,str(ROOT/'build.py')],check=True,capture_output=True)
-        ipk=ROOT.parent/'dist/luci-app-pingwatch_1.6.1-1_all.ipk'
+        ipk=ROOT.parent/'dist/luci-app-pingwatch_1.6.2-1_all.ipk'
         with tarfile.open(ipk,'r:gz') as outer:
             with tarfile.open(fileobj=io.BytesIO(outer.extractfile('./control.tar.gz').read()),mode='r:gz') as control:
                 self.assertIn(b'/etc/config/pingwatch\n',control.extractfile('./conffiles').read())
