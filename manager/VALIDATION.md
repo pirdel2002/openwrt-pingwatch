@@ -1,5 +1,7 @@
 # Validation record
 
+Release 0.3.0-4: 24 local tests and mocked UI checks passed. WAN resolver parsing excludes server header addresses, rejects malformed/loopback inputs and handles BusyBox numbered answer rows. Mocked direct success and route-change checks use the WAN resolver path. Native nslookup/GID/interface behavior and actual direct HTTPS still need router validation. No active route or DNS configuration was changed.
+
 Release 0.3.0-3: 23 local tests passed, including direct-only report isolation, successful mocked direct-probe evidence, real WAN-route change rejection, irrelevant counter/set changes versus output-hook changes, and route cache normalization. User-supplied 0.3.0-2 output reached direct probes but both timed out and the broad evidence comparison reported path_changed. The corrected comparison and DNS/connect/TLS timing diagnostics still require router acceptance; healthy direct connectivity has not been demonstrated.
 
 Release 0.3.0-2: 19 local tests passed. New regression fixtures cover native JSON null verdicts while preserving quoted text, safe inline conntrack verdict maps, and rejection of unsafe/dynamic maps. User output shows nftables 1.1.1 JSON/stateless support and output GID 9912 matches; actual direct-path verification still awaits the corrected parser on the router.

@@ -6,6 +6,7 @@ local sys=require('luci.sys')
 local policy=dofile('/usr/share/pingwatch-manager/policy.lua')
 local diagnostics=dofile('/usr/share/pingwatch-manager/diagnostics.lua')
 local direct=dofile('/usr/share/pingwatch-manager/direct.lua')
+local wan_dns=dofile('/usr/share/pingwatch-manager/dns.lua')
 local stability=dofile('/usr/share/pingwatch-manager/stability.lua')
 local check_only=arg[1]=='--check-configs'
 local direct_only=arg[1]=='--check-direct'
@@ -20,7 +21,7 @@ local function stop()
 end
 local function clean()
   stop()
-  for _,f in ipairs({'core.json','core.err','probe.txt','adapter.err','legacy.rules','config/passwall2','cache/cache_pingwatch_test.txt'}) do fs.unlink(work..'/'..f) end
+  for _,f in ipairs({'core.json','core.err','probe.txt','dns.txt','adapter.err','legacy.rules','config/passwall2','cache/cache_pingwatch_test.txt'}) do fs.unlink(work..'/'..f) end
   fs.rmdir(work..'/cache'); fs.rmdir(work..'/config'); fs.rmdir(work); fs.rmdir(base..'/lock')
 end
 nx.umask('0077')
@@ -48,37 +49,58 @@ local function direct_test()
     local proto=require('luci.model.uci').cursor():get('network','wan','proto')
     local dev=direct.wan(status,proto)
     if not dev then return nil,'wan_unverified' end
-    local route=sys.exec('timeout 5 ip -4 route get 1.1.1.1 2>/dev/null') or ''
-    local route_proof=direct.route(route,dev)
-    if not route_proof then return nil,'wan_route_unverified' end
-    return {rules=proof,device=dev,proto=proto,route=route_proof}
+    local servers,routes={},{}
+    for _,server in ipairs(wan_dns.servers(status)) do
+      local route=sys.exec('timeout 5 ip -4 route get '..server..' 2>/dev/null') or ''
+      local route_proof=direct.route(route,dev)
+      if route_proof then servers[#servers+1]=server; routes[#routes+1]=server..'='..route_proof end
+    end
+    if #servers==0 then return nil,'wan_dns_route_unverified' end
+    return {rules=proof,device=dev,proto=proto,servers=servers,route=table.concat(routes,';')}
   end
   local before,reason=evidence()
   if not before then return {state='unverified',path_verified=false,reason=reason} end
-  local probes={}
-  for i,url in ipairs({'https://www.google.com/generate_204','https://cp.cloudflare.com/generate_204'}) do
+  local function run_child(output_file,args)
     child=assert(nx.fork())
     if child==0 then
-      local output=assert(nx.open(work..'/probe.txt','w', '0600'))
+      local output=assert(nx.open(output_file,'w','0600'))
       local null=assert(nx.open('/dev/null','w')); nx.dup(output,nx.stdout); nx.dup(null,nx.stderr)
       for _,name in ipairs({'http_proxy','https_proxy','all_proxy','HTTP_PROXY','HTTPS_PROXY','ALL_PROXY'}) do nx.setenv(name) end
       if not nx.setgid(9912) then os.exit(126) end
-      nx.exec('/usr/bin/timeout','-k','2','10','/usr/bin/curl','--disable','--silent','--ipv4','--proxy','','--noproxy','*',
-        '--interface','if!'..before.device,'--doh-url','https://1.1.1.1/dns-query',
-        '--connect-timeout','4','--max-time','7','--output','/dev/null','--write-out',
-        '%{http_code}:%{time_total}:%{time_namelookup}:%{time_connect}:%{time_appconnect}',url)
-      os.exit(127)
+      nx.exec('/usr/bin/timeout','-k','2','10',unpack(args)); os.exit(127)
     end
     local _,status,rc=nx.waitpid(child); child=nil
+    return status,rc
+  end
+  local probes={}
+  for i,host in ipairs({'www.google.com','cp.cloudflare.com'}) do
+    local resolved,dns_rc,attempts
+    for n,server in ipairs(before.servers) do
+      local status,rc=run_child(work..'/dns.txt',{'/bin/busybox','nslookup','-type=A',host,server})
+      dns_rc=rc; attempts=n
+      local answers=wan_dns.answers(fs.readfile(work..'/dns.txt'))
+      fs.unlink(work..'/dns.txt')
+      if status=='exited' and rc==0 and #answers>0 then resolved=answers[1]; break end
+    end
+    if not resolved then
+      probes[#probes+1]={endpoint=i,ok=false,http_code=0,exit_code=dns_rc,dns_source='wan',dns_resolved=false,
+        dns_attempts=attempts,failure='dns_resolution_failed'}
+    else
+    local status,rc=run_child(work..'/probe.txt',{'/usr/bin/curl','--disable','--silent','--ipv4','--proxy','','--noproxy','*',
+      '--interface','if!'..before.device,'--resolve',host..':443:'..resolved,
+      '--connect-timeout','4','--max-time','7','--output','/dev/null','--write-out',
+      '%{http_code}:%{time_total}:%{time_namelookup}:%{time_connect}:%{time_appconnect}',
+      'https://'..host..'/generate_204'})
     local code,t,dns,connect,tls=(fs.readfile(work..'/probe.txt') or ''):match('^(%d%d%d):([%d.]+):([%d.]+):([%d.]+):([%d.]+)$')
     dns,connect,tls=tonumber(dns),tonumber(connect),tonumber(tls)
-    local failure=rc==0 and code=='204' and 'none' or rc==28 and dns==0 and 'dns_timeout' or
+    local failure=rc==0 and code=='204' and 'none' or
       rc==28 and connect==0 and 'connect_timeout' or rc==28 and tls==0 and 'tls_timeout' or
       rc==28 and 'request_timeout' or (rc==35 or rc==60) and 'tls_error' or 'request_failed'
     probes[#probes+1]={endpoint=i,ok=status=='exited' and rc==0 and code=='204',http_code=tonumber(code),exit_code=rc,
-      failure=failure,dns_ms=dns and math.floor(dns*1000),connect_ms=connect and math.floor(connect*1000),
+      failure=failure,dns_source='wan',dns_resolved=true,dns_attempts=attempts,connect_ms=connect and math.floor(connect*1000),
       tls_ms=tls and math.floor(tls*1000),ms=tonumber(t) and math.floor(tonumber(t)*1000)}
     fs.unlink(work..'/probe.txt')
+    end
   end
   local after,post_reason=evidence()
   local changed=not after and 'postcheck_'..(post_reason or 'failed') or
@@ -92,7 +114,7 @@ local function direct_test()
   for _,p in ipairs(probes) do if p.exit_code==2 or p.exit_code==4 or p.exit_code==126 or p.exit_code==127 then
     return {state='unverified',path_verified=false,reason='direct_probe_unavailable',probes=probes} end end
   return {state=probes[1].ok and probes[2].ok and 'healthy' or 'unhealthy',path_verified=true,
-    method='wan_bound_gid9912_https_doh',probes=probes}
+    method='wan_bound_gid9912_https_wan_dns',probes=probes}
 end
 local ok=pcall(function()
   assert(fs.mkdir(work,'0700')); assert(fs.mkdir(work..'/config','0700'))

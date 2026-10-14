@@ -1,6 +1,6 @@
 # PingWatch Passwall Manager — advisory manager
 
-Version 0.3.0-3. A separate package beside PingWatch 1.5.3; does not replace its SMS/LED service.
+Version 0.3.0-4. A separate package beside PingWatch 1.5.3; does not replace its SMS/LED service.
 
 ## Safety and scope
 
@@ -19,7 +19,7 @@ Version 0.3.0-3. A separate package beside PingWatch 1.5.3; does not replace its
 Keep a local backup of `/etc/config/passwall2` and existing PingWatch config. Do not share either file. Copy only the IPK to the router, then:
 
 ```sh
-opkg install /root/luci-app-pingwatch-manager_0.3.0-3_all.ipk
+opkg install /root/luci-app-pingwatch-manager_0.3.0-4_all.ipk
 /etc/init.d/rpcd restart
 ```
 
@@ -66,6 +66,8 @@ Local tests: `python manager/tests/test_manager.py` (test-only `lupa` Lua 5.1 ru
 Before automatic management: verify exact installed generator signatures, mark bypass, core PID cleanup, unchanged config/firewall/active default, two-endpoint results, cancellation, and inventory after adding/removing a subscription. Verify direct connectivity independently before implementing fallback. Any live step requires explicit router authorization.
 
 ## Stability and direct path in 0.3.0
+
+Current 0.3.0-4 behavior supersedes the DoH method below: query up to two IPv4 DNS servers advertised by WAN using an isolated GID 9912 BusyBox nslookup child. Each resolver's route must use WAN before and after the tests. Parse only answer addresses after the Name section, never the DNS server's own address. Then pin the resolved address with curl --resolve while preserving the target hostname, certificate verification and WAN interface binding. No c-ares/AsynchDNS support is required and no router DNS setting is changed. Resolver addresses, answers and raw nslookup output remain private and are removed. Direct-only mode retains previous health results and history.
 
 Release 0.3.0-3 compares canonical output-path evidence rather than the whole raw ruleset. Only output hooks, traversed chains and rules up to the GID bypass are included; counter values, rule handles and unrelated dynamic sets are excluded. Every before/after ruleset still independently passes the full conservative output-path proof. WAN route comparison retains device, gateway, source and routing table while ignoring cache metadata. Actual proof, WAN identity or route changes still prevent verification.
 

@@ -125,12 +125,14 @@ class ManagerTests(unittest.TestCase):
           dofile=function(p)
             if p:find('diagnostics',1,true) then return core_diag end
             if p:find('/direct.lua',1,true) then return direct_module end
+            if p:find('/dns.lua',1,true) then return dns_module end
             if p:find('/stability.lua',1,true) then return stability_module end
             return policy
           end
         ''')
         self.lua.globals().core_diag=self.lua.execute((ROOT/'root/usr/share/pingwatch-manager/diagnostics.lua').read_text())
         self.lua.globals().direct_module=self.lua.execute((ROOT/'root/usr/share/pingwatch-manager/direct.lua').read_text())
+        self.lua.globals().dns_module=self.lua.execute((ROOT/'root/usr/share/pingwatch-manager/dns.lua').read_text())
         self.lua.globals().stability_module=self.lua.execute((ROOT/'root/usr/share/pingwatch-manager/stability.lua').read_text())
         self.lua.globals().invalid=invalid
         if check_only:
@@ -149,7 +151,7 @@ class ManagerTests(unittest.TestCase):
               local get=cursor.get
               function cursor:get(config,id,key) if config=='network' then return 'dhcp' end; return get(self,config,id,key) end
               local j=require('luci.jsonc'); local parse=j.parse
-              j.parse=function(raw) if raw=='NFT' then return nft_payload elseif raw=='WAN' then return {up=true,l3_device='eth0'} end; return parse(raw) end
+              j.parse=function(raw) if raw=='NFT' then return nft_payload elseif raw=='WAN' then return {up=true,l3_device='eth0',['dns-server']={'9.9.9.9'}} end; return parse(raw) end
               local routes=0
               require('luci.sys').exec=function(cmd)
                 if cmd:find('nft -s',1,true) then return 'NFT' end
@@ -159,7 +161,9 @@ class ManagerTests(unittest.TestCase):
                 return ''
               end
               local nx=require('nixio')
-              nx.fork=function() files['/tmp/pingwatch-manager/work/probe.txt']='204:0.120:0.010:0.020:0.090'; return 123 end
+              nx.fork=function()
+                files['/tmp/pingwatch-manager/work/dns.txt']='Server: 9.9.9.9\\nAddress: 9.9.9.9#53\\nName: target\\nAddress: 142.250.1.1'
+                files['/tmp/pingwatch-manager/work/probe.txt']='204:0.120:0.010:0.020:0.090'; return 123 end
               nx.waitpid=function() return 123,'exited',0 end
             ''')
         self.lua.execute(code)
@@ -170,7 +174,7 @@ class ManagerTests(unittest.TestCase):
             assert(s.recommendation.node==nil)
             if direct_success and not route_changed then
               assert(s.direct.state=='healthy' and s.direct.path_verified==true)
-              assert(s.direct.probes[1].dns_ms==10 and s.direct.probes[1].failure=='none')
+              assert(s.direct.probes[1].dns_resolved and s.direct.probes[1].dns_source=='wan' and s.direct.probes[1].failure=='none')
             elseif route_changed then
               assert(s.direct.state=='unverified' and s.direct.reason=='wan_route_changed')
             else assert(s.direct.state=='unverified') end
@@ -204,6 +208,17 @@ class ManagerTests(unittest.TestCase):
 
     def test_direct_only_preserves_health_and_history(self):
         self.test_worker_mock_end_to_end(direct_only=True)
+
+    def test_wan_dns_parser_does_not_use_server_address_as_answer(self):
+        self.lua.globals().dns=self.lua.execute((ROOT/'root/usr/share/pingwatch-manager/dns.lua').read_text())
+        self.lua.execute('''
+          assert(#dns.answers('Server: 9.9.9.9\\nAddress: 9.9.9.9#53\\nNXDOMAIN')==0)
+          local a=dns.answers('Server: 9.9.9.9\\nAddress: 9.9.9.9#53\\nName: example\\nAddress 1: 142.250.1.1\\nAddress 2: 2001:db8::1')
+          assert(#a==1 and a[1]=='142.250.1.1')
+          assert(not dns.ipv4('127.0.0.1') and not dns.ipv4('999.1.1.1') and not dns.ipv4('1.1.1.1;bad'))
+          local s=dns.servers({['dns-server']={'9.9.9.9','9.9.9.9','127.0.0.1','1.1.1.1'}})
+          assert(#s==2)
+        ''')
 
     def test_direct_only_success_with_verified_evidence(self):
         self.test_worker_mock_end_to_end(direct_only=True,direct_success=True)
@@ -379,7 +394,7 @@ class ManagerTests(unittest.TestCase):
     def test_package_contents(self):
         import subprocess, tarfile, io
         subprocess.run([sys.executable,str(ROOT/'build.py')],check=True,capture_output=True)
-        ipk=ROOT.parent/'dist/luci-app-pingwatch-manager_0.3.0-3_all.ipk'
+        ipk=ROOT.parent/'dist/luci-app-pingwatch-manager_0.3.0-4_all.ipk'
         with tarfile.open(ipk,'r:gz') as outer:
             with tarfile.open(fileobj=io.BytesIO(outer.extractfile('./data.tar.gz').read()),mode='r:gz') as data:
                 names=data.getnames()
