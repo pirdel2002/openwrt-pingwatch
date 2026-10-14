@@ -49,7 +49,7 @@ arg={}
 stage='generator_load'
 local generator=require('luci.passwall2.'..module_name)
 stage='generate_config'
-local result=assert(generator.gen_config({node=id,local_socks_address='127.0.0.1',local_socks_port=tostring(port),loglevel='error',log='0'}))
+local result=assert(generator.gen_config({flag='pingwatch_test',node=id,local_socks_address='127.0.0.1',local_socks_port=tostring(port),loglevel='error',log='0',no_run=true}))
 stage='validate_config'
 local c=assert(api.jsonc.parse(result))
 assert(c.inbounds and #c.inbounds==1)

@@ -113,6 +113,8 @@ class ManagerTests(unittest.TestCase):
           api={sys={exec=function() return 'Xray 26.10.10' end},jsonc={parse=function() return config end,stringify=function() return 'SAFE_OUTPUT' end}}
           package.preload['luci.passwall2.api']=function() return api end
           package.preload['luci.passwall2.util_xray']=function() return {gen_config=function(v)
+            local cache_file='cache_'..v.flag..'.txt'
+            assert(cache_file=='cache_pingwatch_test.txt' and v.no_run==true)
             assert(v.node=='node1' and v.local_socks_address=='127.0.0.1')
             assert(not pcall(function() api.uci:set('passwall2','rulenode','default_node','wrong') end))
             assert(not pcall(function() api.sys.call('nft flush ruleset') end))
@@ -137,7 +139,7 @@ class ManagerTests(unittest.TestCase):
     def test_package_contents(self):
         import subprocess, tarfile, io
         subprocess.run([sys.executable,str(ROOT/'build.py')],check=True,capture_output=True)
-        ipk=ROOT.parent/'dist/luci-app-pingwatch-manager_0.1.0-4_all.ipk'
+        ipk=ROOT.parent/'dist/luci-app-pingwatch-manager_0.1.0-5_all.ipk'
         with tarfile.open(ipk,'r:gz') as outer:
             with tarfile.open(fileobj=io.BytesIO(outer.extractfile('./data.tar.gz').read()),mode='r:gz') as data:
                 names=data.getnames()

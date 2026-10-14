@@ -13,8 +13,8 @@ local function stop()
 end
 local function clean()
   stop()
-  for _,f in ipairs({'core.json','probe.txt','adapter.err','config/passwall2'}) do fs.unlink(work..'/'..f) end
-  fs.rmdir(work..'/config'); fs.rmdir(work); fs.rmdir(base..'/lock')
+  for _,f in ipairs({'core.json','probe.txt','adapter.err','config/passwall2','cache/cache_pingwatch_test.txt'}) do fs.unlink(work..'/'..f) end
+  fs.rmdir(work..'/cache'); fs.rmdir(work..'/config'); fs.rmdir(work); fs.rmdir(base..'/lock')
 end
 nx.umask('0077')
 fs.mkdir(base,'0700')
@@ -26,6 +26,7 @@ local function publish(s)
 end
 local ok=pcall(function()
   assert(fs.mkdir(work,'0700')); assert(fs.mkdir(work..'/config','0700'))
+  assert(fs.mkdir(work..'/cache','0700'))
   local snapshot=assert(fs.readfile('/etc/config/passwall2'))
   assert(fs.writefile(work..'/config/passwall2',snapshot))
   local cursor=require('luci.model.uci').cursor(work..'/config')
@@ -75,6 +76,7 @@ local ok=pcall(function()
       end
     end
     fs.unlink(work..'/core.json'); fs.unlink(work..'/probe.txt'); fs.unlink(work..'/adapter.err')
+    fs.unlink(work..'/cache/cache_pingwatch_test.txt')
     report.rows[#report.rows+1]=row; publish(report)
   end
   local unchanged=fs.readfile('/etc/config/passwall2')==snapshot
