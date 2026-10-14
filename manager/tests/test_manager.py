@@ -58,7 +58,7 @@ class ManagerTests(unittest.TestCase):
         self.lua.execute('''
           files={['/etc/config/passwall2']='SECRET_CONFIG'}; directories={}; published={}; calls={}; killed={}
           local fs={}
-          function fs.mkdir(p) if directories[p] then return false end; directories[p]=true; return true end
+          function fs.mkdir(p,mode) assert(mode=='0700'); if directories[p] then return false end; directories[p]=true; return true end
           function fs.lstat(p) return directories[p] end
           function fs.readfile(p) return files[p] end
           function fs.writefile(p,v) files[p]=v; return true end
@@ -67,7 +67,8 @@ class ManagerTests(unittest.TestCase):
           function fs.rmdir(p) directories[p]=nil; return true end
           package.preload['nixio.fs']=function() return fs end
           package.preload['nixio']=function() return {
-            umask=function() end, signal=function() end, nanosleep=function() end,
+            umask=function(mode) assert(mode=='0077') end,
+            signal=function(_,mode) assert(mode=='ign' or mode=='dfl') end, nanosleep=function() end,
             fork=function() return 123 end, kill=function(p) killed[#killed+1]=p end, waitpid=function() end,
             socket=function() return {bind=function() return true end,getsockname=function() return '127.0.0.1',49000 end,
               close=function() end,connect=function() return true end} end
@@ -126,7 +127,7 @@ class ManagerTests(unittest.TestCase):
     def test_package_contents(self):
         import subprocess, tarfile, io
         subprocess.run([sys.executable,str(ROOT/'build.py')],check=True,capture_output=True)
-        ipk=ROOT.parent/'dist/luci-app-pingwatch-manager_0.1.0-2_all.ipk'
+        ipk=ROOT.parent/'dist/luci-app-pingwatch-manager_0.1.0-3_all.ipk'
         with tarfile.open(ipk,'r:gz') as outer:
             with tarfile.open(fileobj=io.BytesIO(outer.extractfile('./data.tar.gz').read()),mode='r:gz') as data:
                 names=data.getnames()

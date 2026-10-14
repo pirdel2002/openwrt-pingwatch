@@ -1,6 +1,6 @@
 # PingWatch Passwall Manager — phase 1
 
-Version 0.1.0-2. A separate package beside PingWatch 1.5.3; does not replace its SMS/LED service.
+Version 0.1.0-3. A separate package beside PingWatch 1.5.3; does not replace its SMS/LED service.
 
 ## Safety and scope
 
@@ -19,7 +19,7 @@ Version 0.1.0-2. A separate package beside PingWatch 1.5.3; does not replace its
 Keep a local backup of `/etc/config/passwall2` and existing PingWatch config. Do not share either file. Copy only the IPK to the router, then:
 
 ```sh
-opkg install /root/luci-app-pingwatch-manager_0.1.0-2_all.ipk
+opkg install /root/luci-app-pingwatch-manager_0.1.0-3_all.ipk
 /etc/init.d/rpcd restart
 ```
 
@@ -35,7 +35,7 @@ Wait until the page shows completion. A batch of 36 nodes can take several minut
 /etc/init.d/pingwatch-manager stop
 ```
 
-No enable command is needed. After a forced kill/power interruption, RAM state may be stale; reboot clears it. If a lock remains, verify the worker and its test core have exited before manually removing the lock and private work directory. Never remove a live worker's lock.
+No enable command is needed. After cancellation, a forced kill or power interruption, RAM state may be stale; temporary cores are bounded by a 25-second timeout plus a 2-second kill grace period; reboot clears it. If a lock remains, verify the worker and its test core have exited before manually removing the lock and private work directory. Never remove a live worker's lock.
 
 For a repeat run after completion: ` /etc/init.d/pingwatch-manager restart `. This restarts only the separate test service.
 
