@@ -1,1 +1,0 @@
-{"luci-app-pingwatch-manager":{"description":"Read redacted PingWatch test results","read":{"ubus":{"file":["exec"]},"file":{"/usr/sbin/pingwatch-manager-results":["exec"]}}}}

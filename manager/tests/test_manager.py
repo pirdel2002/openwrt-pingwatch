@@ -90,7 +90,7 @@ class ManagerTests(unittest.TestCase):
           assert(policy.plan(report,cursor,1000).reason=='direct_unverified')
         ''')
 
-    def test_worker_mock_end_to_end(self,check_only=False,invalid=False,direct_only=False,direct_success=False,route_changed=False):
+    def test_worker_mock_end_to_end(self,check_only=False,invalid=False,direct_only=False,direct_success=False,route_changed=False,target=False):
         code=(ROOT/'root/usr/sbin/pingwatch-manager-worker').read_text().split('\n',1)[1]
         self.lua.execute('''
           files={['/etc/config/passwall2']='SECRET_CONFIG'}; directories={}; published={}; calls={}; killed={}
@@ -139,6 +139,8 @@ class ManagerTests(unittest.TestCase):
             self.lua.execute("arg={'--check-configs'}; files['/tmp/pingwatch-manager/results.json']='PREVIOUS_RESULTS'")
         if direct_only:
             self.lua.execute("arg={'--check-direct'}; files['/tmp/pingwatch-manager/results.json']='PREVIOUS_RESULTS'")
+        if target:
+            self.lua.execute("arg={'--check-node','node1'}; files['/tmp/pingwatch-manager/results.json']='PREVIOUS_RESULTS'; sections[#sections+1]={['.name']='node2',['.type']='nodes',type='Xray',protocol='vless'}")
         self.lua.globals().direct_success=direct_success
         self.lua.globals().route_changed=route_changed
         if direct_success:
@@ -169,7 +171,11 @@ class ManagerTests(unittest.TestCase):
         self.lua.execute(code)
         self.lua.execute('''
           local s=published[#published]; assert(s.complete and not s.running and not s.route_changed)
-          if arg[1]=='--check-direct' then
+          if arg[1]=='--check-node' then
+            assert(s.mode=='candidate_check_only' and #s.rows==1 and s.rows[1].id=='node1' and s.rows[1].state=='healthy')
+            assert(s.plan==nil and s.stability==nil and files['/tmp/pingwatch-manager/results.json']=='PREVIOUS_RESULTS')
+            assert(files['/tmp/pingwatch-manager/history.json']==nil)
+          elseif arg[1]=='--check-direct' then
             assert(s.mode=='direct_check_only' and #s.rows==0 and s.plan==nil and s.stability==nil)
             assert(s.recommendation.node==nil)
             if direct_success and not route_changed then
@@ -208,6 +214,9 @@ class ManagerTests(unittest.TestCase):
 
     def test_direct_only_preserves_health_and_history(self):
         self.test_worker_mock_end_to_end(direct_only=True)
+
+    def test_candidate_retest_isolated_from_main_results(self):
+        self.test_worker_mock_end_to_end(target=True)
 
     def test_wan_dns_parser_does_not_use_server_address_as_answer(self):
         self.lua.globals().dns=self.lua.execute((ROOT/'root/usr/share/pingwatch-manager/dns.lua').read_text())
@@ -354,6 +363,7 @@ class ManagerTests(unittest.TestCase):
         for p in (ROOT/'root').rglob('*'):
             if p.is_file() and (p.suffix=='.lua' or p.name.startswith('pingwatch-manager-')):
                 code=p.read_text()
+                if code.startswith('#!/bin/sh'): continue
                 if code.startswith('#!'): code=code.split('\n',1)[1]
                 result=self.lua.eval('loadstring')(code)
                 self.assertFalse(isinstance(result,tuple),str(p))
@@ -394,11 +404,24 @@ class ManagerTests(unittest.TestCase):
     def test_package_contents(self):
         import subprocess, tarfile, io
         subprocess.run([sys.executable,str(ROOT/'build.py')],check=True,capture_output=True)
-        ipk=ROOT.parent/'dist/luci-app-pingwatch-manager_0.3.0-4_all.ipk'
+        ipk=ROOT.parent/'dist/luci-app-pingwatch_1.6.0-1_all.ipk'
         with tarfile.open(ipk,'r:gz') as outer:
+            with tarfile.open(fileobj=io.BytesIO(outer.extractfile('./control.tar.gz').read()),mode='r:gz') as control:
+                self.assertIn(b'/etc/config/pingwatch\n',control.extractfile('./conffiles').read())
+                self.assertNotIn(b'pingwatch-manager enable',control.extractfile('./postinst').read())
             with tarfile.open(fileobj=io.BytesIO(outer.extractfile('./data.tar.gz').read()),mode='r:gz') as data:
                 names=data.getnames()
-                self.assertFalse(any('etc/config/' in n for n in names))
+                self.assertNotIn('./etc/config/passwall2',names)
+                self.assertEqual([n for n in names if n.endswith('.json') and '/menu.d/' in n],['./usr/share/luci/menu.d/luci-app-pingwatch.json'])
+                self.assertIn(b"option enabled '0'",data.extractfile('./etc/config/pingwatch_manager').read())
+                main=data.extractfile('./www/luci-static/resources/view/pingwatch/main.js').read()
+                self.assertIn(b'managerView.render()',main)
+                self.assertIn(b"'manager', false",main)
+                self.assertIn('./usr/sbin/pingwatch-send-sms',names)
+                import json
+                acl=json.loads(data.extractfile('./usr/share/rpcd/acl.d/luci-app-pingwatch.json').read())['luci-app-pingwatch']
+                self.assertNotIn('passwall2',acl['write']['uci'])
+                self.assertIn('/usr/sbin/pingwatch-manager-control disable',acl['write']['file'])
                 self.assertEqual(data.getmember('./usr/sbin/pingwatch-manager-worker').mode,0o755)
                 self.assertIn('./www/luci-static/resources/view/pingwatch/manager.js',names)
                 self.assertTrue(data.getmember('./usr/share/pingwatch-manager').isdir())
@@ -409,5 +432,63 @@ class ManagerTests(unittest.TestCase):
                     parent=Path(member.name).parent.as_posix()
                     self.assertIn(parent,created,member.name)
                     if member.isdir(): created.add(Path(member.name).as_posix())
+
+    def transaction_fixture(self):
+        self.lua.globals().transaction=self.lua.execute((ROOT/'root/usr/share/pingwatch-manager/transaction.lua').read_text())
+        self.lua.execute('''
+          state='OLD'; enabled=true; writes=0; restarts=0; rollback_health=true; active_health=true
+          e={enabled=function() return enabled end, read=function() return state end,
+            proposal=function() return {state='awaiting_approval',expected='old',node='new'} end,
+            retest=function() return true end,prepare=function(before,id) return 'NEW' end,
+            only_default=function() return true end,backup=function(before) backup=before end,
+            replace=function(before,after) if state~=before then return false end; state=after; writes=writes+1; return true end,
+            restart=function() restarts=restarts+1; return true end,
+            active=function() return restarts==1 and active_health or restarts>1 and rollback_health end,
+            disable=function() enabled=false end,
+            rollback=function(old,new,original) if state~='NEW' then return false end; state=original; return true end}
+        ''')
+
+    def test_transaction_success_and_exact_scope(self):
+        self.transaction_fixture()
+        self.lua.execute("local r=transaction.run(e); assert(r.state=='applied_verified' and writes==1 and backup=='OLD' and restarts==1)")
+
+    def test_transaction_blocks_disabled_and_failed_retest(self):
+        self.transaction_fixture()
+        self.lua.execute('''
+          enabled=false; assert(transaction.run(e).reason=='disabled' and writes==0)
+          enabled=true; e.retest=function() return false end
+          assert(transaction.run(e).reason=='candidate_retest_failed' and writes==0)
+          e.retest=function() enabled=false; return true end
+          assert(transaction.run(e).reason=='disabled' and writes==0)
+        ''')
+
+    def test_transaction_config_conflict_and_scope_change(self):
+        self.transaction_fixture()
+        self.lua.execute('''
+          e.retest=function() state='USER_EDIT'; return true end
+          assert(transaction.run(e).reason=='config_changed' and writes==0 and state=='USER_EDIT')
+          state='OLD'; e.retest=function() return true end; e.only_default=function() return false end
+          assert(transaction.run(e).reason=='scope_verification_failed' and writes==0)
+        ''')
+
+    def test_transaction_rollback_after_active_path_failure(self):
+        self.transaction_fixture()
+        self.lua.execute("active_health=false; local r=transaction.run(e); assert(r.state=='rolled_back_verified' and state=='OLD' and not enabled and restarts==2)")
+
+    def test_transaction_off_switch_checked_immediately_before_write(self):
+        self.transaction_fixture()
+        self.lua.execute("e.backup=function() enabled=false end; assert(transaction.run(e).reason=='disabled' and writes==0 and state=='OLD')")
+
+    def test_transaction_reports_failed_rollback_health(self):
+        self.transaction_fixture()
+        self.lua.execute("active_health=false; rollback_health=false; local r=transaction.run(e); assert(r.state=='rolled_back_unverified' and state=='OLD' and not enabled)")
+
+    def test_transaction_does_not_overwrite_concurrent_default_change(self):
+        self.transaction_fixture()
+        self.lua.execute('''
+          e.active=function() state='USER_EDIT'; return false end
+          local r=transaction.run(e)
+          assert(r.state=='rollback_conflict' and state=='USER_EDIT' and r.requires_attention and not enabled)
+        ''')
 
 if __name__ == '__main__': unittest.main(verbosity=2)

@@ -1,0 +1,27 @@
+#!/usr/bin/lua
+local fs=require('nixio.fs')
+local sys=require('luci.sys')
+local json=require('luci.jsonc')
+local function enabled() return require('uci').cursor():get('pingwatch_manager','main','enabled')=='1' end
+local action=arg[1] or 'status'
+assert(action=='status' or action=='enable' or action=='disable','invalid_action')
+if action~='status' then
+  local c=require('uci').cursor()
+  if not c:get('pingwatch_manager','main') then c:section('pingwatch_manager','manager','main',{}) end
+  assert(c:set('pingwatch_manager','main','enabled',action=='enable' and '1' or '0'))
+  assert(c:commit('pingwatch_manager'))
+  if action=='enable' then
+    sys.call('/etc/init.d/pingwatch-manager enable >/dev/null 2>&1')
+    if sys.call('/etc/init.d/pingwatch-manager running >/dev/null 2>&1')~=0 then
+      if sys.call('/etc/init.d/pingwatch-manager start >/dev/null 2>&1')~=0 then
+        c:set('pingwatch_manager','main','enabled','0'); c:commit('pingwatch_manager'); error('start_failed')
+      end
+    end
+  else
+    -- Do not kill an in-flight test and leave its private files/lock behind.
+    -- The daemon will exit; apply independently checks this switch before write.
+    sys.call('/etc/init.d/pingwatch-manager disable >/dev/null 2>&1')
+  end
+end
+local last=json.parse(fs.readfile('/tmp/pingwatch-manager/action.json') or '')
+print(json.stringify({enabled=enabled(),last_action=last}))

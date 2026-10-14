@@ -1,0 +1,142 @@
+#!/usr/bin/lua
+local nx=require('nixio')
+local fs=require('nixio.fs')
+local sys=require('luci.sys')
+local json=require('luci.jsonc')
+local native=require('uci')
+local policy=dofile('/usr/share/pingwatch-manager/policy.lua')
+local transaction=dofile('/usr/share/pingwatch-manager/transaction.lua')
+local base='/tmp/pingwatch-manager'
+local tx=base..'/apply.lock'
+local source='/etc/config/passwall2'
+nx.umask('0077')
+fs.mkdir(base,'0700')
+assert(fs.mkdir(tx,'0700'),'apply_already_running')
+assert(fs.mkdir(tx..'/config','0700')); assert(fs.mkdir(tx..'/state','0700'))
+local function q(s) return "'"..s:gsub("'","'\\''").."'" end
+local function pending() return (sys.exec('uci changes passwall2 2>/dev/null') or '')~='' end
+local function cursor_for(content)
+  assert(fs.writefile(tx..'/config/passwall2',content))
+  return native.cursor(tx..'/config',tx..'/state')
+end
+local function snapshot(content)
+  local data={}
+  cursor_for(content):foreach('passwall2',nil,function(s)
+    local item={type=s['.type'],options={}}
+    for k,v in pairs(s) do if k:sub(1,1)~='.' then item.options[k]=v end end
+    data[s['.name']]=item
+  end)
+  return data
+end
+local function canonical(t)
+  if type(t)~='table' then return type(t)..':'..#tostring(t)..':'..tostring(t) end
+  local keys,out={},{}
+  for k in pairs(t) do keys[#keys+1]=k end
+  table.sort(keys,function(a,b) return tostring(a)<tostring(b) end)
+  for _,k in ipairs(keys) do out[#out+1]=canonical(k)..'='..canonical(t[k]) end
+  return '{'..table.concat(out,';')..'}'
+end
+local function enabled() return native.cursor():get('pingwatch_manager','main','enabled')=='1' end
+local intended,original_shunt
+local function disable()
+  local c=native.cursor(); c:set('pingwatch_manager','main','enabled','0'); c:commit('pingwatch_manager')
+end
+local function prepare(content,id)
+  local c=cursor_for(content)
+  if id then assert(c:set('passwall2','rulenode','default_node',id)) else c:delete('passwall2','rulenode','default_node') end
+  assert(c:commit('passwall2'))
+  return assert(fs.readfile(tx..'/config/passwall2'))
+end
+local function only_default(a,b,id)
+  local x,y=snapshot(a),snapshot(b)
+  if not x.rulenode or not y.rulenode or y.rulenode.options.default_node~=id then return false end
+  x.rulenode.options.default_node=nil; y.rulenode.options.default_node=nil
+  return canonical(x)==canonical(y)
+end
+local function replace(expected,replacement)
+  if pending() or fs.readfile(source)~=expected then return false end
+  local stage='/etc/config/.pingwatch-passwall2-'..nx.getpid()..'.new'
+  if fs.lstat(stage) then return false end
+  if sys.call('cp -p '..source..' '..q(stage)..' >/dev/null 2>&1')~=0 then return false end
+  local ok=fs.writefile(stage,replacement) and not pending() and fs.readfile(source)==expected
+  if ok then ok=fs.rename(stage,source) end
+  if not ok then fs.unlink(stage) end
+  return ok and true or false
+end
+local env={enabled=enabled,disable=disable,prepare=prepare,only_default=only_default,replace=replace,
+  read=function() return assert(fs.readfile(source)) end,
+  backup=function(content) assert(fs.writefile(base..'/passwall2.before',content)) end,
+  restart=function() return sys.call('timeout 45 /etc/init.d/passwall2 restart >/dev/null 2>&1')==0 end}
+env.proposal=function(before)
+  if pending() then return {reason='pending_uci_changes'} end
+  local report=json.parse(fs.readfile(base..'/results.json') or '')
+  local history=json.parse(fs.readfile(base..'/history.json') or '')
+  local hash=(sys.exec('sha256sum '..source..' 2>/dev/null') or ''):match('^(%x+)')
+  local last=history and history.rounds and history.rounds[#history.rounds]
+  if not report or not history or not hash or history.context~=hash or not last or last.finished_at~=report.finished_at then return {reason='report_context_changed'} end
+  local action=json.parse(fs.readfile(base..'/action.json') or '')
+  if action and action.state=='applied_verified' and os.time()-(action.finished_at or 0)<300 then return {reason='cooldown'} end
+  local plan=policy.plan(report,cursor_for(before),os.time())
+  if plan.state=='awaiting_approval' then
+    intended=plan.node; original_shunt=snapshot(before).rulenode
+    original_shunt.options.default_node=nil
+  end
+  return plan
+end
+env.retest=function(id)
+  local started=os.time()
+  local direct=id=='_direct'
+  if not direct and not id:match('^[%w_]+$') then return false end
+  local command=direct and '--check-direct' or '--check-node '..id
+  if sys.call('/usr/sbin/pingwatch-manager-worker '..command..' >/dev/null 2>&1')~=0 then return false end
+  local r=json.parse(fs.readfile(base..(direct and '/direct-checks.json' or '/candidate-check.json')) or '')
+  if not r or not r.complete or r.running or not r.snapshot_current or not r.guard_ok or (r.started_at or 0)<started then return false end
+  if direct then return r.direct and r.direct.state=='healthy' and r.direct.path_verified==true end
+  return r.rows and #r.rows==1 and r.rows[1].id==id and r.rows[1].state=='healthy'
+end
+env.active=function()
+  local function config_matches()
+    local content=fs.readfile(source)
+    if not content then return false end
+    local c=cursor_for(content)
+    if not policy.guard(c) or c:get('passwall2','@global[0]','node')~='rulenode' or
+      c:get('passwall2','rulenode','default_node')~=intended then return false end
+    local shunt=snapshot(content).rulenode; shunt.options.default_node=nil
+    return canonical(shunt)==canonical(original_shunt)
+  end
+  if not config_matches() then return false end
+  local port
+  for _=1,10 do
+    port=tonumber((sys.exec('. /usr/share/passwall2/utils.sh; get_cache_var ACL_acl_default_node_socks_port 2>/dev/null') or ''):match('^%s*(%d+)%s*$'))
+    if port and port>0 and port<=65535 then break end
+    nx.nanosleep(1,0)
+  end
+  if not port or port<1 or port>65535 then return false end
+  for _,url in ipairs({'https://www.google.com/generate_204','https://cp.cloudflare.com/generate_204'}) do
+    local cmd="curl --disable --silent --noproxy '' --proxy socks5h://127.0.0.1:"..port..
+      " --connect-timeout 4 --max-time 7 --output /dev/null --write-out '%{http_code}' "..q(url)..' 2>/dev/null'
+    if sys.call(cmd..' > '..q(tx..'/active.txt'))~=0 or fs.readfile(tx..'/active.txt')~='204' then return false end
+  end
+  return config_matches()
+end
+env.rollback=function(old,new,original)
+  local current=assert(fs.readfile(source))
+  local c=cursor_for(current)
+  if pending() or not policy.guard(c) or c:get('passwall2','rulenode','default_node')~=new then return false end
+  if old and old~='_direct' and c:get('passwall2',old)~='nodes' then return false end
+  local a,b=snapshot(original),snapshot(current)
+  a.rulenode.options.default_node=nil; b.rulenode.options.default_node=nil
+  if canonical(a.rulenode)~=canonical(b.rulenode) then return false end
+  local restored=prepare(current,old)
+  local ok=only_default(current,restored,old) and replace(current,restored)
+  if ok then intended=old end
+  return ok
+end
+local ok,result=pcall(transaction.run,env)
+if not ok then disable(); result={state='apply_error',disabled=true,requires_attention=true} end
+result.finished_at=os.time()
+assert(fs.writefile(base..'/action.new',json.stringify(result)))
+assert(fs.rename(base..'/action.new',base..'/action.json'))
+for _,f in ipairs({'config/passwall2','state/passwall2','active.txt'}) do fs.unlink(tx..'/'..f) end
+fs.rmdir(tx..'/state'); fs.rmdir(tx..'/config'); fs.rmdir(tx)
+print(json.stringify(result))

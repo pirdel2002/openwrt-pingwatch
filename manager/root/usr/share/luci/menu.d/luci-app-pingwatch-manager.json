@@ -1,1 +1,0 @@
-{"admin/services/pingwatch-manager":{"title":"PingWatch Passwall Manager","order":61,"action":{"type":"view","path":"pingwatch/manager"},"depends":{"acl":["luci-app-pingwatch-manager"]}}}

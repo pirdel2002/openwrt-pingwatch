@@ -6,9 +6,30 @@ return view.extend({
   handleSave: null, handleSaveApply: null, handleReset: null,
   render: function() {
     var summary=E('p'), table=E('table', {'class':'table'}), plan=E('p');
-    var root=E('div', {dir:'rtl'}, [E('h2',{},'نتایج آزمون PingWatch'),
-      E('p',{},'بررسی سلامت و پیشنهاد default شانت؛ تغییر مسیر به تأیید جداگانه نیاز دارد.'),summary,table,plan]);
+    var toggle=E('input',{type:'checkbox',disabled:true});
+    var controlStatus=E('span',{},'در حال خواندن وضعیت…');
+    toggle.addEventListener('change',function(){
+      toggle.disabled=true;
+      fs.exec('/usr/sbin/pingwatch-manager-control',[toggle.checked?'enable':'disable']).then(function(r){
+        if(r.code) throw new Error('control_failed');
+        var s=JSON.parse(r.stdout||'{}'); toggle.checked=s.enabled===true;
+        controlStatus.textContent=s.enabled?'روشن؛ پس از تأیید پایداری، default شانت خودکار مدیریت می‌شود.':'خاموش؛ تغییر خودکار مسیر متوقف است.';
+      }).catch(function(){toggle.checked=!toggle.checked;controlStatus.textContent='تغییر وضعیت ناموفق بود.';})
+        .finally(function(){toggle.disabled=false;});
+    });
+    var root=E('div', {dir:'rtl'}, [E('h2',{},'مدیریت Passwall'),
+      E('div',{'class':'cbi-section'},[
+        E('p',{},'این کلید فقط مدیریت خودکار Passwall را کنترل می‌کند. خاموش‌کردن، مسیر فعلی را حفظ می‌کند؛ SMS و LED تنظیمات قبلی خود را دارند.'),
+        E('label',{'class':'cbi-value'},[toggle,' مدیریت خودکار Passwall — ',controlStatus])]),summary,table,plan]);
     function refresh() {
+      fs.exec('/usr/sbin/pingwatch-manager-control').then(function(r){
+        var s=JSON.parse(r.stdout||'{}'); toggle.checked=s.enabled===true; toggle.disabled=false;
+        var states={applied_verified:'تغییر اعمال و مسیر فعال تأیید شد',rolled_back_verified:'بازگشت به مقدار قبلی تأیید شد',
+          rolled_back_unverified:'تنظیم قبلی بازگردانده شد؛ سلامت مسیر تأیید نشد',rollback_conflict:'بازگشت متوقف شد؛ بررسی دستی لازم است',
+          apply_error:'خطای اعمال؛ مدیریت خاموش شد',blocked:'در انتظار شرایط لازم'};
+        controlStatus.textContent=(s.enabled?'روشن؛ اعمال خودکار مجاز است.':'خاموش؛ تغییر خودکار مسیر متوقف است.')+
+          (s.last_action?' | '+(states[s.last_action.state]||s.last_action.state)+(s.last_action.reason?' ('+s.last_action.reason+')':''):'');
+      }).catch(function(){controlStatus.textContent='خواندن وضعیت مدیریت ناموفق بود.';});
       return fs.exec('/usr/sbin/pingwatch-manager-results').then(function(r) {
         var s=JSON.parse(r.stdout || '{}');
         var nodes=Array.isArray(s.rows)?s.rows:[];

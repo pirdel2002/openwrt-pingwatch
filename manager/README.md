@@ -1,5 +1,7 @@
 # PingWatch Passwall Manager — advisory manager
 
+**Current release: unified PingWatch 1.6.0-1. See [README-UNIFIED.md](README-UNIFIED.md). The remainder is the earlier standalone development reference.**
+
 Version 0.3.0-4. A separate package beside PingWatch 1.5.3; does not replace its SMS/LED service.
 
 ## Safety and scope

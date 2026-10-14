@@ -1,0 +1,2 @@
+config manager 'main'
+	option enabled '0'

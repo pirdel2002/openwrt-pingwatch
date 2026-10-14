@@ -1,5 +1,9 @@
 # Validation record
 
+Unified 1.6.0-1: local tests now cover one menu and one package, preserved original SMS/LED files and config conffiles, default-off management, fixed enable/disable helper dispatch, candidate re-testing, disabled-before-write checks, scope/conflict refusal and rollback outcomes. All native Lua sources parse as Lua 5.1; service scripts pass syntax-only checks. Live native UCI apply/restart/rollback and integrated LuCI rendering are not yet router-validated. No router deployment or active-route change was performed by the agent.
+
+Final local result: 32 Python/Lua tests passed, manager UI mock including enable/disable dispatch passed, and the merged main.js from the built IPK passed JavaScript syntax checking. The package contains one menu JSON; both configuration files are conffiles, and post-install does not enable the manager. Native router validation remains outstanding for the new apply/controller layer.
+
 Release 0.3.0-4: 24 local tests and mocked UI checks passed. WAN resolver parsing excludes server header addresses, rejects malformed/loopback inputs and handles BusyBox numbered answer rows. Mocked direct success and route-change checks use the WAN resolver path. Native nslookup/GID/interface behavior and actual direct HTTPS still need router validation. No active route or DNS configuration was changed.
 
 Release 0.3.0-3: 23 local tests passed, including direct-only report isolation, successful mocked direct-probe evidence, real WAN-route change rejection, irrelevant counter/set changes versus output-hook changes, and route cache normalization. User-supplied 0.3.0-2 output reached direct probes but both timed out and the broad evidence comparison reported path_changed. The corrected comparison and DNS/connect/TLS timing diagnostics still require router acceptance; healthy direct connectivity has not been demonstrated.

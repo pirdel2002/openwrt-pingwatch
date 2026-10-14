@@ -1,0 +1,10 @@
+#!/bin/sh
+enabled() { [ "$(uci -q get pingwatch_manager.main.enabled)" = '1' ]; }
+while enabled; do
+  if /usr/sbin/pingwatch-manager-worker >/dev/null 2>&1; then
+    enabled && /usr/sbin/pingwatch-manager-apply >/dev/null 2>&1
+  fi
+  # Poll the off switch while waiting; no active routing work while disabled.
+  i=0
+  while enabled && [ "$i" -lt 60 ]; do sleep 2; i=$((i + 2)); done
+done

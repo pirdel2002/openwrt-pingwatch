@@ -2,7 +2,7 @@
 
 PingWatch is a LuCI application for OpenWrt that monitors network targets, controls an RGB status LED, and sends IPPanel SMS notifications on outages and recoveries.
 
-Current version: **1.5.3-1**
+Current development version: **1.6.0-1** — one PingWatch application with an integrated Passwall management tab and an explicit default-off automatic-management switch. See [unified install and behavior](manager/README-UNIFIED.md). The older 1.5.3 release files below are retained as the source baseline.
 
 ## Features
 

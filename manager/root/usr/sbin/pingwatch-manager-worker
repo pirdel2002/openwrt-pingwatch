@@ -10,9 +10,11 @@ local wan_dns=dofile('/usr/share/pingwatch-manager/dns.lua')
 local stability=dofile('/usr/share/pingwatch-manager/stability.lua')
 local check_only=arg[1]=='--check-configs'
 local direct_only=arg[1]=='--check-direct'
-assert(not arg[1] or check_only or direct_only,'unknown_argument')
+local target=arg[1]=='--check-node' and arg[2] or nil
+assert(not arg[1] or check_only or direct_only or target,'unknown_argument')
+assert(not target or target:match('^[%w_]+$'),'invalid_node')
 local base='/tmp/pingwatch-manager'
-local result_name=direct_only and 'direct-checks' or check_only and 'config-checks' or 'results'
+local result_name=target and 'candidate-check' or direct_only and 'direct-checks' or check_only and 'config-checks' or 'results'
 local work=base..'/work'
 local child
 local function quote(s) return "'"..s:gsub("'", "'\\''").."'" end
@@ -26,6 +28,7 @@ local function clean()
 end
 nx.umask('0077')
 fs.mkdir(base,'0700')
+assert(not fs.lstat(base..'/apply.lock') or target or direct_only,'apply_in_progress')
 assert(not fs.lstat(base..'/lock'), 'worker_already_running')
 assert(fs.mkdir(base..'/lock','0700'), 'worker_already_running')
 local function publish(s)
@@ -123,10 +126,12 @@ local ok=pcall(function()
   assert(fs.writefile(work..'/config/passwall2',snapshot))
   local cursor=require('luci.model.uci').cursor(work..'/config')
   local nodes,subs=policy.inventory(cursor)
-  local report={phase=1,mode=direct_only and 'direct_check_only' or check_only and 'config_check_only' or 'observe_only',started_at=os.time(),running=true,rows={},subscriptions=subs,
+  local report={phase=1,mode=target and 'candidate_check_only' or direct_only and 'direct_check_only' or check_only and 'config_check_only' or 'observe_only',started_at=os.time(),running=true,rows={},subscriptions=subs,
     guard_ok=policy.guard(cursor),direct={state='unverified'},route_changed=false}
   publish(report)
-  for _,n in ipairs(direct_only and {} or nodes) do
+  local selected={}
+  for _,n in ipairs(nodes) do if not target or n.id==target then selected[#selected+1]=n end end
+  for _,n in ipairs(direct_only and {} or selected) do
     local row={id=n.id,protocol=n.protocol,core=n.core,state='unsupported'}
     if n.id:match('^[%w_]+$') and (n.core=='Xray' or n.core=='Sing-Box' or n.core=='sing-box') then
       -- Reserve a currently free loopback port; core readiness is checked below.
@@ -184,7 +189,7 @@ local ok=pcall(function()
     fs.unlink(work..'/cache/cache_pingwatch_test.txt')
     report.rows[#report.rows+1]=row; publish(report)
   end
-  if not check_only then
+  if not check_only and not target then
     local tested,result=pcall(direct_test)
     report.direct=tested and result or {state='unverified',path_verified=false,reason='direct_probe_error'}
     stop()
@@ -194,7 +199,7 @@ local ok=pcall(function()
   report.recommendation=direct_only and {state='unknown',reason='direct_check_only'} or
     policy.recommend(report.rows,report.guard_ok and unchanged,report.direct.state=='healthy' and report.direct.path_verified==true)
   report.complete=unchanged
-  if not check_only and not direct_only then
+  if not check_only and not direct_only and not target then
     local context
     if type(sys.exec)=='function' then context=(sys.exec('sha256sum '..quote(work..'/config/passwall2')..' 2>/dev/null') or ''):match('^(%x+)') end
     local old=json.parse(fs.readfile(base..'/history.json') or '')

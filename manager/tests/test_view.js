@@ -1,13 +1,25 @@
 const vm=require('node:vm'), fs=require('node:fs'), assert=require('node:assert');
 let view, poll, empty=false, stale=false;
-function E(tag,attrs,children){return {tag,attrs:attrs||{},children:children||[],replaceChildren(...r){this.children=r;}};}
+let enabled=false, actions=[];
+function E(tag,attrs,children){return {tag,attrs:attrs||{},children:children||[],listeners:{},addEventListener(name,f){this.listeners[name]=f;},replaceChildren(...r){this.children=r;}};}
 vm.runInNewContext('(function(){'+fs.readFileSync('manager/root/www/luci-static/resources/view/pingwatch/manager.js','utf8')+'})()',{
-  E, view:{extend(v){view=v;}},poll:{add(f){poll=f;}},fs:{exec(){return Promise.resolve({stdout:JSON.stringify(empty?{rows:{},subscriptions:{}}:{complete:true,guard_ok:true,
+  E, view:{extend(v){view=v;}},poll:{add(f){poll=f;}},fs:{exec(path,args){
+    if(path.endsWith('pingwatch-manager-control')){
+      if(args){actions.push(args[0]);enabled=args[0]==='enable';}
+      return Promise.resolve({code:0,stdout:JSON.stringify({enabled})});
+    }
+    return Promise.resolve({stdout:JSON.stringify(empty?{rows:{},subscriptions:{}}:{complete:true,guard_ok:true,
     finished_at:Date.now()/1000-(stale?301:0),plan:{state:'awaiting_approval',reason:'healthy_candidate',expected:'old',node:'n1'},
     subscriptions:[{id:'s1'}],rows:[{id:'n1',core:'Xray',protocol:'vless',state:'healthy',latency_ms:120,probes:[{ok:true},{ok:false,failure:'timeout'}]}]})});}},
 });
 view.render().then(async root=>{
   assert.equal(root.attrs.dir,'rtl'); assert.equal(view.handleSaveApply,null);
+  var toggle=root.children[1].children[1].children[0];
+  assert.equal(toggle.checked,false);
+  toggle.checked=true; toggle.listeners.change(); await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(enabled,true); assert.equal(toggle.checked,true);
+  toggle.checked=false; toggle.listeners.change(); await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(enabled,false); assert.deepEqual(actions,['enable','disable']);
   assert(root.children[2].textContent.includes('تأیید نشده'));
   assert.equal(root.children[3].children.length,2); assert(poll);
   assert(root.children[4].textContent.includes('rulenode.default_node'));
