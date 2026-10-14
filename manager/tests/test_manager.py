@@ -202,6 +202,39 @@ class ManagerTests(unittest.TestCase):
           history,summary=stable.update(history,report,nil); assert(not summary.ready)
         ''')
 
+    def test_nft_null_verdicts_preserved_without_rewriting_strings(self):
+        import json
+        direct=self.lua.execute((ROOT/'root/usr/share/pingwatch-manager/direct.lua').read_text())
+        raw=json.dumps({'nftables':[
+            {'chain':{'family':'inet','table':'passwall2','name':'nat_output','hook':'output'}},
+            {'rule':{'family':'inet','table':'passwall2','chain':'nat_output','expr':[
+                {'match':{'op':'==','left':{'meta':{'key':'skgid'}},'right':9912}},
+                {'counter':None},{'return':None}], 'comment':'literal "return":null and escaped \\"null"'}},
+            {'rule':{'family':'inet','table':'passwall2','chain':'nat_output','expr':[{'redirect':{'port':1234}}]}}
+        ]})
+        parse=lambda s:self.lua.table_from(json.loads(s),recursive=True)
+        decoded=direct.decode(raw,parse)
+        result=direct.firewall(decoded)
+        self.assertTrue(result[0] if isinstance(result,tuple) else result)
+        self.assertEqual(decoded['nftables'][2]['rule']['comment'],json.loads(raw)['nftables'][1]['rule']['comment'])
+        self.assertTrue(decoded['nftables'][2]['rule']['expr'][3]['return']['_null'])
+
+    def test_only_safe_inline_conntrack_verdict_maps_allowed(self):
+        self.lua.globals().direct=self.lua.execute((ROOT/'root/usr/share/pingwatch-manager/direct.lua').read_text())
+        self.lua.execute('''
+          local map={key={ct={key='state'}},data={set={{'established',{accept={_null=true}}},{'related',{accept={_null=true}}}}}}
+          local rules={nftables={
+            {chain={family='inet',table='fw4',name='output',hook='output'}},
+            {rule={family='inet',table='fw4',chain='output',expr={{vmap=map}}}},
+            {chain={family='inet',table='passwall2',name='nat_output',hook='output'}},
+            {rule={family='inet',table='passwall2',chain='nat_output',expr={
+              {match={op='==',left={meta={key='skgid'}},right=9912}},{['return']={_null=true}}}}}
+          }}
+          assert(direct.firewall(rules))
+          map.data.set[1][2]={jump={target='unsafe'}}; assert(not direct.firewall(rules))
+          map.data='@dynamic_map'; assert(not direct.firewall(rules))
+        ''')
+
     def test_direct_fallback_requires_stable_complete_failures(self):
         self.lua.execute('''
           sections[#sections+1]={['.name']='@global[0]',['.type']='global',node='rulenode'}
@@ -277,7 +310,7 @@ class ManagerTests(unittest.TestCase):
     def test_package_contents(self):
         import subprocess, tarfile, io
         subprocess.run([sys.executable,str(ROOT/'build.py')],check=True,capture_output=True)
-        ipk=ROOT.parent/'dist/luci-app-pingwatch-manager_0.3.0-1_all.ipk'
+        ipk=ROOT.parent/'dist/luci-app-pingwatch-manager_0.3.0-2_all.ipk'
         with tarfile.open(ipk,'r:gz') as outer:
             with tarfile.open(fileobj=io.BytesIO(outer.extractfile('./data.tar.gz').read()),mode='r:gz') as data:
                 names=data.getnames()

@@ -1,6 +1,6 @@
 # PingWatch Passwall Manager — advisory manager
 
-Version 0.3.0-1. A separate package beside PingWatch 1.5.3; does not replace its SMS/LED service.
+Version 0.3.0-2. A separate package beside PingWatch 1.5.3; does not replace its SMS/LED service.
 
 ## Safety and scope
 
@@ -19,7 +19,7 @@ Version 0.3.0-1. A separate package beside PingWatch 1.5.3; does not replace its
 Keep a local backup of `/etc/config/passwall2` and existing PingWatch config. Do not share either file. Copy only the IPK to the router, then:
 
 ```sh
-opkg install /root/luci-app-pingwatch-manager_0.3.0-1_all.ipk
+opkg install /root/luci-app-pingwatch-manager_0.3.0-2_all.ipk
 /etc/init.d/rpcd restart
 ```
 
@@ -66,6 +66,8 @@ Local tests: `python manager/tests/test_manager.py` (test-only `lupa` Lua 5.1 ru
 Before automatic management: verify exact installed generator signatures, mark bypass, core PID cleanup, unchanged config/firewall/active default, two-endpoint results, cancellation, and inventory after adding/removing a subscription. Verify direct connectivity independently before implementing fallback. Any live step requires explicit router authorization.
 
 ## Stability and direct path in 0.3.0
+
+Release 0.3.0-2 preserves JSON null verdicts before calling luci.jsonc (otherwise `return: null` can disappear). It also recognizes inline conntrack-state verdict maps containing only simple accept/drop/return/continue verdicts. Dynamic maps, jumps in maps and unknown output actions remain unsupported. Detailed failure labels still contain no rules, addresses or credentials.
 
 Run three full batches, leaving at least 30 seconds between completion times. History is RAM-only and holds three rounds from the last 15 minutes. A SHA-256 fingerprint of the full config scopes the history; any config/subscription change, reboot, unavailable hash or backward clock change resets confidence. A Node must pass both endpoints in all three rounds. Ranking uses the median of its three worst-endpoint times, then the existing improvement threshold. A single-batch recommendation is separate from the stable `plan`.
 

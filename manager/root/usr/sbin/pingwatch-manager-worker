@@ -33,7 +33,8 @@ end
 local function direct_test()
   local function evidence()
     local raw=sys.exec('timeout 5 nft -s -j list ruleset 2>/dev/null')
-    if not direct.firewall(json.parse(raw or '')) then return nil,'firewall_bypass_unverified' end
+    local verified,why=direct.firewall(direct.decode(raw,json.parse))
+    if not verified then return nil,'firewall_'..(why or 'bypass_unverified') end
     local legacy
     if sys.call('command -v iptables-legacy-save >/dev/null 2>&1')==0 then legacy='iptables-legacy-save'
     elseif sys.call('command -v iptables-save >/dev/null 2>&1')==0 and

@@ -1,8 +1,26 @@
 -- Conservative nftables proof for a child whose socket GID is 9912.
 -- Unknown output rules or unavailable evidence leave direct UNVERIFIED.
 local M={}
+-- luci.jsonc may drop object members whose JSON value is null. Preserve null
+-- tokens before decoding; never rewrite text inside JSON strings/comments.
+function M.decode(raw,parse)
+  if type(raw)~='string' then return nil end
+  local out,inside,escaped={},false,false
+  local i=1
+  while i<=#raw do
+    local c=raw:sub(i,i)
+    if inside then
+      out[#out+1]=c
+      if escaped then escaped=false elseif c=='\\' then escaped=true elseif c=='"' then inside=false end
+      i=i+1
+    elseif c=='"' then inside=true; out[#out+1]=c; i=i+1
+    elseif raw:sub(i,i+3)=='null' then out[#out+1]='{"_null":true}'; i=i+4
+    else out[#out+1]=c; i=i+1 end
+  end
+  return parse(table.concat(out))
+end
 function M.firewall(ruleset)
-  if type(ruleset)~='table' or type(ruleset.nftables)~='table' then return false end
+  if type(ruleset)~='table' or type(ruleset.nftables)~='table' then return false,'ruleset_unreadable' end
   local chains,roots={},{}
   local function key(s) return s.family..'/'..s.table..'/'..s.name end
   for _,entry in ipairs(ruleset.nftables) do
@@ -37,26 +55,41 @@ function M.firewall(ruleset)
     return m and m.op=='==' and m.left and m.left.meta and m.left.meta.key=='skgid' and
       (m.right==9912 or m.right=='9912') and filtered[2]['return']~=nil
   end
+  local function simple_vmap(v)
+    if type(v)~='table' or not v.key or not v.key.ct or v.key.ct.key~='state' or
+      not v.data or type(v.data.set)~='table' or #v.data.set==0 then return false end
+    for _,pair in ipairs(v.data.set) do
+      if type(pair)~='table' or #pair~=2 or not ({established=true,related=true,new=true,invalid=true,untracked=true})[pair[1]] then return false end
+      local verdict=pair[2]
+      if not (only(verdict,'accept') or only(verdict,'drop') or only(verdict,'return') or only(verdict,'continue')) then return false end
+    end
+    return true
+  end
   local function safe(k,stack)
-    if stack[k] or not chains[k] then return false end
+    if stack[k] or not chains[k] then return false,'chain_graph_unknown' end
     stack[k]=true
     for _,expr in ipairs(chains[k].rules) do
       if bypass(expr) then seen_bypass=true; stack[k]=nil; return true end
       for _,e in ipairs(expr or {}) do
         for name,v in pairs(e) do
           if name=='jump' or name=='goto' then
-            if type(v)~='table' or not v.target or not safe(k:match('^(.-/.-/)')..v.target,stack) then return false end
+            if type(v)~='table' or not v.target then return false,'chain_graph_unknown' end
+            local ok,reason=safe(k:match('^(.-/.-/)')..v.target,stack)
+            if not ok then return false,reason end
+          elseif name=='vmap' then
+            if not simple_vmap(v) then return false,'verdict_map_unsupported' end
           elseif not ({match=true,counter=true,log=true,accept=true,drop=true,reject=true,['return']=true})[name] then
-            return false
+            return false,'output_action_unknown'
           end
         end
       end
     end
     stack[k]=nil; return true
   end
-  if #roots==0 then return false end
-  for _,k in ipairs(roots) do if not safe(k,{}) then return false end end
-  return seen_bypass
+  if #roots==0 then return false,'output_hooks_missing' end
+  for _,k in ipairs(roots) do local ok,reason=safe(k,{}); if not ok then return false,reason end end
+  if seen_bypass then return true end
+  return false,'gid_bypass_missing'
 end
 function M.wan(status,proto)
   if not ({dhcp=true,static=true,pppoe=true})[proto] or not status or status.up~=true then return nil end
